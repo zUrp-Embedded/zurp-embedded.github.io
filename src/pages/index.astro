@@ -5,6 +5,7 @@ import ProductCard from '../components/ProductCard.astro';
 const products = [
   {
     name: 'LCARS-fleet',
+    subtitle: 'Lightweight Contained Agent Resilient System',
     tagline:
       'Multi-agent fleet runtime for Claude Code. ~1 MB of bash, zero framework, NASA-grade corpus discipline. Moon-shot quality, built solo.',
     category: 'Runtime',
@@ -50,10 +51,18 @@ const products = [
         and a $200/month plan."
       </p>
       <p>
-        We went the other way. <span class="mono">LCARS-fleet</span> is what you get when
-        you refuse that deal: a multi-agent runtime written in ~1&nbsp;MB of plain bash,
-        orchestrated around a corpus of specifications reviewed with the rigor of a space
-        program. No framework, no magic, no moat. Just files, pipes, and discipline.
+        We went the other way. <span class="mono">LCARS-fleet</span> — <em>Lightweight
+        Contained Agent Resilient System</em> — is what you get when you refuse that
+        deal: a multi-agent runtime written in ~1&nbsp;MB of plain bash, orchestrated
+        around a corpus of specifications reviewed with the rigor of a space program.
+        No framework, no magic, no moat. Just files, pipes, and discipline.
+      </p>
+      <p>
+        The name encodes the two load-bearing invariants: the agent is
+        <strong>contained</strong> (a wall, not a prompt — nothing escapes the runtime)
+        and the system is <strong>resilient</strong> (when the agent fails inside,
+        the runtime recovers without human intervention). Everything else is a
+        corollary.
       </p>
       <p>
         It's absurd to apply NASA-grade methodology to a solo project. That's the point.

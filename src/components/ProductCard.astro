@@ -1,13 +1,14 @@
 ---
 interface Props {
   name: string;
+  subtitle?: string;
   tagline: string;
   category: string;
   repo: string;
   status?: 'wip' | 'future' | 'released';
 }
 
-const { name, tagline, category, repo, status = 'wip' } = Astro.props;
+const { name, subtitle, tagline, category, repo, status = 'wip' } = Astro.props;
 
 const statusLabel = {
   wip: 'WIP',
@@ -22,6 +23,7 @@ const statusLabel = {
     <span class={`status status-${status}`}>{statusLabel[status]}</span>
   </div>
   <h3>{name}</h3>
+  {subtitle && <p class="subtitle">{subtitle}</p>}
   <p>{tagline}</p>
 </a>
 
@@ -81,8 +83,17 @@ const statusLabel = {
 
   .card h3 {
     font-size: 1.4rem;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.25rem;
     color: var(--fg);
+  }
+
+  .card .subtitle {
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    font-size: 0.8rem;
+    color: var(--accent);
+    margin-bottom: 0.75rem;
+    opacity: 0.9;
+    letter-spacing: 0.02em;
   }
 
   .card p {
