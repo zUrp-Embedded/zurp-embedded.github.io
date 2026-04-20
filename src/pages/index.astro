@@ -1,0 +1,273 @@
+---
+import Layout from '../layouts/Layout.astro';
+import ProductCard from '../components/ProductCard.astro';
+
+const products = [
+  {
+    name: 'LCARS-fleet',
+    tagline:
+      'Multi-agent fleet runtime for Claude Code. ~1 MB of bash, zero framework, NASA-grade corpus discipline. Moon-shot quality, built solo.',
+    category: 'Runtime',
+    repo: 'https://github.com/zUrp-Embedded/LCARS-fleet',
+    status: 'wip' as const,
+  },
+];
+---
+
+<Layout title="zUrp Embedded">
+  <header class="hero">
+    <div class="container">
+      <img
+        src="/logo_zUrp-embedded.png"
+        alt="zUrp Embedded corporate logotype"
+        class="hero-logo"
+      />
+      <p class="tagline">Low-tech · DIY · Moon-shot embedded</p>
+      <p class="pitch">
+        We build embedded systems with the discipline of a space agency and the headcount
+        of one developer. Low-tech by conviction, over-engineered by principle.
+      </p>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="catalog">
+      <h2>Catalog</h2>
+      <div class="grid">
+        {products.map((p) => <ProductCard {...p} />)}
+      </div>
+      <p class="private-note">
+        <span class="warn">⚠</span> Active repositories are <strong>private</strong> during
+        the forge phase. They will be migrated to this organization on release.
+      </p>
+    </section>
+
+    <section class="manifesto">
+      <h2>Manifesto</h2>
+      <p>
+        Agentic orchestration got expensive in 2026. Frameworks grew heavy, abstractions
+        grew taxing, and "production-grade" started meaning "dependent on five SaaS
+        and a $200/month plan."
+      </p>
+      <p>
+        We went the other way. <span class="mono">LCARS-fleet</span> is what you get when
+        you refuse that deal: a multi-agent runtime written in ~1&nbsp;MB of plain bash,
+        orchestrated around a corpus of specifications reviewed with the rigor of a space
+        program. No framework, no magic, no moat. Just files, pipes, and discipline.
+      </p>
+      <p>
+        It's absurd to apply NASA-grade methodology to a solo project. That's the point.
+        The sky doesn't care about our budget either.
+      </p>
+    </section>
+
+    <section class="charter">
+      <h2>Engineering charter</h2>
+      <ul class="charter-list">
+        <li><strong>Plain text over framework.</strong> Bash, POSIX, files, pipes. If it needs npm, it's not here yet.</li>
+        <li><strong>Corpus before code.</strong> Specifications are reviewed before implementation, not after.</li>
+        <li><strong>Mechanic over cognitive.</strong> The LLM decides. Bash executes. The boundary is enforced, not suggested.</li>
+        <li><strong>One developer, NASA methodology.</strong> 4-phase plan, 11 ADRs, audit pipeline. Overkill is the feature.</li>
+        <li><strong>Open by intent.</strong> GPL-3.0 on release. No proprietary hooks.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container footer-inner">
+      <p><em>zUrp Embedded — a subsidiary of zUrp Industries.</em></p>
+      <p class="legalese">
+        Built with <a href="https://astro.build">Astro</a>, ~1&nbsp;MB of bash, and stubbornness.
+        Hosted on GitHub Pages because the cloud is just someone else's keiretsu.
+      </p>
+      <img
+        src="/Low_tech_DIY.png"
+        alt="Nyan Cat — Low-Tech & DIY internal sticker"
+        class="easter-egg"
+        title="Internal sticker — culture zUrp"
+      />
+    </div>
+  </footer>
+</Layout>
+
+<style>
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 1.5rem;
+  }
+
+  .hero {
+    background:
+      radial-gradient(ellipse at 20% 30%, rgba(249, 115, 22, 0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 70%, rgba(249, 115, 22, 0.04) 0%, transparent 50%),
+      var(--bg);
+    padding: 6rem 0 5rem;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+
+  .hero::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(249, 115, 22, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(249, 115, 22, 0.03) 1px, transparent 1px);
+    background-size: 32px 32px;
+    pointer-events: none;
+  }
+
+  .hero .container {
+    position: relative;
+    z-index: 1;
+  }
+
+  .hero-logo {
+    max-width: 520px;
+    width: 80%;
+    filter: invert(1) brightness(1.1);
+    margin-bottom: 2rem;
+  }
+
+  .tagline {
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 1.5rem;
+  }
+
+  .pitch {
+    max-width: 620px;
+    margin: 0 auto;
+    font-size: 1.1rem;
+    color: var(--fg-muted);
+  }
+
+  section {
+    padding: 4rem 0;
+  }
+
+  section h2 {
+    font-size: 2rem;
+    margin-bottom: 2rem;
+    color: var(--fg);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.25rem;
+  }
+
+  .private-note {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background: rgba(249, 115, 22, 0.06);
+    border-left: 3px solid var(--accent);
+    border-radius: 3px;
+    font-size: 0.9rem;
+    color: var(--fg-muted);
+  }
+
+  .private-note .warn {
+    color: var(--accent);
+    margin-right: 0.25rem;
+  }
+
+  .manifesto, .charter {
+    border-top: 1px solid var(--border);
+  }
+
+  .manifesto p {
+    max-width: 720px;
+    margin-bottom: 1.2rem;
+    color: var(--fg-muted);
+    font-size: 1.05rem;
+  }
+
+  .mono {
+    font-family: var(--font-mono);
+    color: var(--fg);
+    font-size: 0.95em;
+    background: var(--bg-elev);
+    padding: 0.1em 0.4em;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+  }
+
+  .charter-list {
+    max-width: 720px;
+    list-style: none;
+    padding: 0;
+  }
+
+  .charter-list li {
+    padding: 0.75rem 0;
+    border-bottom: 1px solid var(--border);
+    color: var(--fg-muted);
+    font-size: 1rem;
+  }
+
+  .charter-list li strong {
+    color: var(--fg);
+    display: block;
+    margin-bottom: 0.2rem;
+    font-weight: 600;
+  }
+
+  .charter-list li:last-child {
+    border-bottom: none;
+  }
+
+  footer {
+    background: var(--bg-elev);
+    border-top: 1px solid var(--border);
+    padding: 3rem 0;
+    text-align: center;
+  }
+
+  .footer-inner p {
+    color: var(--fg-muted);
+    font-size: 0.9rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .legalese {
+    font-size: 0.8rem !important;
+    color: var(--fg-muted);
+    opacity: 0.7;
+  }
+
+  .easter-egg {
+    max-width: 140px;
+    margin-top: 1.5rem;
+    opacity: 0.6;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    cursor: pointer;
+  }
+
+  .easter-egg:hover {
+    opacity: 1;
+    transform: scale(1.1) rotate(-2deg);
+  }
+
+  @media (max-width: 640px) {
+    .hero {
+      padding: 4rem 0 3rem;
+    }
+    .hero-logo {
+      max-width: 300px;
+      width: 90%;
+    }
+    section {
+      padding: 3rem 0;
+    }
+    section h2 {
+      font-size: 1.6rem;
+    }
+  }
+</style>

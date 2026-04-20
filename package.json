@@ -1,0 +1,15 @@
+{
+  "name": "zurp-embedded.github.io",
+  "version": "0.1.0",
+  "description": "zUrp Embedded corporate site — low-tech, DIY, moon-shot embedded systems.",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "astro": "^4.16.19"
+  }
+}
