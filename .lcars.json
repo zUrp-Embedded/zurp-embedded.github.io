@@ -1,0 +1,8 @@
+{
+  "_schema": "lcars/declaration",
+  "declared_at": "2026-11-24",
+  "declared_by": "starfleet",
+  "justification": "Site de l'org GitHub zUrp-Embedded, miroir du moteur de zurp-astro-site, demandé par l'humain. Il est importé plutôt que créé pour garder l'historique déjà publié (8 commits). L'humain a choisi le catalogue fleet et la carte code.",
+  "pipeline_default": "code",
+  "upstream": "https://github.com/zUrp-Embedded/zurp-embedded.github.io"
+}

@@ -1,123 +1,106 @@
 ---
-import Layout from '../layouts/Layout.astro';
-import ProductCard from '../components/ProductCard.astro';
+// SOURCE: zurp-astronomics-site — home of the main site (v2, at `/`): the "Low-Tech & DIY" poster pinned to the soot wall, series 2 catalog
+// AUTHOR: engineer
+// DATE: 2026-10-03
+// STATUS: active
+// REVISED: 2026-10-06 (ticket #49) — every text comes from content/ (site.yml, home/pitch.md, home/manifesto.md, catalog.yml)
+// REVISED: 2026-10-21 (ticket #117) — the « => GitHub » stamp stands straight (and stays so under
+//   prefers-reduced-motion); the poster no longer moves under the pointer. The poster, its tape and
+//   the label keep their tilt: the one crooked gesture of the site, on purpose
+//
+// The layout of the home page zUrp Embedded had before the engine (src/pages/index.astro of
+// 8c2fc77): a centred hero — the logo (the h1), the subtitle in orange monospaced capitals, the pitch
+// — over a faint orange glow and grid, then the catalog, then the footer. The texts live in content/
+// (src/lib/content.mjs): this page only places them. The catalog comes from src/data/catalog.ts (the
+// product repositories). No manifesto: the engine's was astro copy, the old site's is about LCARS.
+//
+// Catalog: one titled shelf per section (Libraries, Tools, Future), sections and their order read
+// from content/catalog.yml (`sections`, each product's `section`), never listed here. Inside a shelf,
+// products keep the catalog's order (ticket #46: latest GitHub release first, then the products
+// without a release by name — src/lib/catalog/assemble.mjs). A section with no product is not drawn.
+// Each shelf lays its cards on the old site's auto-fill grid.
+//
+// The hero's title block (logo, subtitle) is the big header of src/components/v2/SiteHeader.astro
+// (part="full"): it scrolls away with the page and fades out as the compact bar (drawn by V2Layout,
+// `home`) fades in (ticket #31).
+//
+// The social card is the Low-Tech & DIY poster (src/assets/header/low-tech-diy-poster.webp), as a JPEG.
+import { getImage } from 'astro:assets';
+import V2Layout from '../layouts/V2Layout.astro';
+import SiteHeader from '../components/v2/SiteHeader.astro';
+import PosterTile from '../components/v2/PosterTile.astro';
+import { getCatalog } from '../data/catalog';
+import { catalogContent, inlineMarkdown, readMarkdown, siteContent } from '../lib/content.mjs';
+import lowTechPoster from '../assets/header/low-tech-diy-poster.webp';
 
-const products = [
-  {
-    name: 'LCARS-fleet',
-    subtitle: 'Lightweight Contained Agent Resilient System',
-    tagline:
-      'Multi-agent fleet runtime for Claude Code. ~1 MB of bash, zero framework, NASA-grade corpus discipline. Moon-shot quality, built solo.',
-    category: 'Runtime',
-    repo: '/LCARS-fleet/',
-    status: 'wip' as const,
-  },
-];
+const site = siteContent();
+const { sections } = catalogContent();
+const pitch = inlineMarkdown(readMarkdown('home/pitch.md'));
+
+// Social card: the poster, as a JPEG (widest support among link unfurlers), 1200 × 800.
+const ogPoster = await getImage({ src: lowTechPoster, width: 1200, format: 'jpg', quality: 78 });
+
+const catalog = await getCatalog();
+const shelves = sections
+  .map((section) => ({
+    ...section,
+    tiles: catalog
+      .filter((p) => p.section === section.id)
+      .map((p) => ({
+        name: p.name,
+        tagline: p.tagline,
+        href: `/${p.slug}/`,
+        poster: p.poster,
+        posterAlt: p.posterAlt,
+      })),
+  }))
+  .filter((shelf) => shelf.tiles.length > 0);
 ---
 
-<Layout title="zUrp Embedded">
-  <header class="hero">
-    <div class="container">
-      <img
-        src="/logo_zUrp-embedded.png"
-        alt="zUrp Embedded corporate logotype"
-        class="hero-logo"
-      />
-      <p class="tagline">Low-tech · DIY · Moon-shot embedded</p>
-      <p class="pitch">
-        We build embedded systems with the discipline of a space agency and the headcount
-        of one developer. Low-tech by conviction, over-engineered by principle.
-      </p>
+<V2Layout title={site.name} ogImage={ogPoster.src} home>
+  <!-- A <div>, not a <header>: the big header inside it is the page's one banner. -->
+  <div class="hero">
+    <!-- The title (logo h1, subtitle): the site's big header. -->
+    <SiteHeader part="full" />
+    <div class="z2-container">
+      <p class="pitch" set:html={pitch} />
     </div>
-  </header>
+  </div>
 
-  <main class="container">
-    <section class="catalog">
-      <h2>Catalog</h2>
-      <div class="grid">
-        {products.map((p) => <ProductCard {...p} />)}
+  <main class="z2-container">
+    <section class="catalog" aria-labelledby="catalog-title">
+      <h2 id="catalog-title" class="z2-band">{site.home.catalogTitle}</h2>
+      <div class="shelves">
+        {
+          shelves.map((shelf) => (
+            <section class="shelf" aria-labelledby={`shelf-${shelf.id}`}>
+              <h3 id={`shelf-${shelf.id}`} class="shelf-title">
+                {shelf.title}
+              </h3>
+              <div class="grid">
+                {shelf.tiles.map((t) => (
+                  <PosterTile {...t} />
+                ))}
+              </div>
+            </section>
+          ))
+        }
       </div>
-      <p class="private-note">
-        <span class="warn">⚠</span> Active repositories are <strong>private</strong> during
-        the forge phase. They will be migrated to this organization on release.
-      </p>
-    </section>
-
-    <section class="manifesto">
-      <h2>Manifesto</h2>
-      <p>
-        Agentic orchestration got expensive in 2026. Frameworks grew heavy, abstractions
-        grew taxing, and "production-grade" started meaning "dependent on five SaaS
-        and a $200/month plan."
-      </p>
-      <p>
-        We went the other way. <span class="mono">LCARS-fleet</span> — <em>Lightweight
-        Contained Agent Resilient System</em> — is what you get when you refuse that
-        deal: a multi-agent runtime written in ~1&nbsp;MB of plain bash, orchestrated
-        around a corpus of specifications reviewed with the rigor of a space program.
-        No framework, no magic, no moat. Just files, pipes, and discipline.
-      </p>
-      <p>
-        The name encodes the two load-bearing invariants: the agent is
-        <strong>contained</strong> (a wall, not a prompt — nothing escapes the runtime)
-        and the system is <strong>resilient</strong> (when the agent fails inside,
-        the runtime recovers without human intervention). Everything else is a
-        corollary.
-      </p>
-      <p>
-        It's absurd to apply NASA-grade methodology to a solo project. That's the point.
-        The sky doesn't care about our budget either.
-      </p>
-    </section>
-
-    <section class="charter">
-      <h2>Engineering charter</h2>
-      <ul class="charter-list">
-        <li><strong>Plain text over framework.</strong> Bash, POSIX, files, pipes. If it needs npm, it's not here yet.</li>
-        <li><strong>Corpus before code.</strong> Specifications are reviewed before implementation, not after.</li>
-        <li><strong>Mechanic over cognitive.</strong> The LLM decides. Bash executes. The boundary is enforced, not suggested.</li>
-        <li><strong>One developer, NASA methodology.</strong> 4-phase plan, 11 ADRs, audit pipeline. Overkill is the feature.</li>
-        <li><strong>Open by intent.</strong> GPL-3.0 on release. No proprietary hooks.</li>
-      </ul>
     </section>
   </main>
-
-  <footer>
-    <div class="container footer-inner">
-      <p class="org-link">
-        GitHub · <a href="https://github.com/zUrp-Embedded">@zUrp-Embedded</a>
-      </p>
-      <p><em>zUrp Embedded — a subsidiary of zUrp Industries.</em></p>
-      <p class="legalese">
-        Built with <a href="https://astro.build">Astro</a>, ~1&nbsp;MB of bash, and stubbornness.
-        Hosted on GitHub Pages because the cloud is just someone else's keiretsu.
-      </p>
-      <img
-        src="/Low_tech_DIY.png"
-        alt="Nyan Cat — Low-Tech & DIY internal sticker"
-        class="easter-egg"
-        title="Internal sticker — culture zUrp"
-      />
-    </div>
-  </footer>
-</Layout>
+</V2Layout>
 
 <style>
-  .container {
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: 0 1.5rem;
-  }
-
+  /* The old site's hero: an orange glow and a faint grid behind the centred title block. */
   .hero {
+    position: relative;
+    padding: 6rem 0 5rem;
+    text-align: center;
     background:
       radial-gradient(ellipse at 20% 30%, rgba(249, 115, 22, 0.08) 0%, transparent 50%),
       radial-gradient(ellipse at 80% 70%, rgba(249, 115, 22, 0.04) 0%, transparent 50%),
       var(--bg);
-    padding: 6rem 0 5rem;
-    text-align: center;
     border-bottom: 1px solid var(--border);
-    position: relative;
   }
 
   .hero::after {
@@ -131,25 +114,9 @@ const products = [
     pointer-events: none;
   }
 
-  .hero .container {
+  .hero > :global(*) {
     position: relative;
     z-index: 1;
-  }
-
-  .hero-logo {
-    max-width: 520px;
-    width: 80%;
-    filter: invert(1) brightness(1.1);
-    margin-bottom: 2rem;
-  }
-
-  .tagline {
-    font-family: var(--font-mono);
-    font-size: 0.95rem;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin-bottom: 1.5rem;
   }
 
   .pitch {
@@ -159,14 +126,25 @@ const products = [
     color: var(--fg-muted);
   }
 
-  section {
+  section.catalog {
     padding: 4rem 0;
   }
 
-  section h2 {
-    font-size: 2rem;
-    margin-bottom: 2rem;
-    color: var(--fg);
+  .shelves {
+    display: flex;
+    flex-direction: column;
+    row-gap: 3rem;
+  }
+
+  /* A shelf's title: the old card's category line, a little larger. */
+  .shelf-title {
+    margin-bottom: 1.25rem;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    font-weight: 500;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
   }
 
   .grid {
@@ -175,122 +153,12 @@ const products = [
     gap: 1.25rem;
   }
 
-  .private-note {
-    margin-top: 1.5rem;
-    padding: 1rem;
-    background: rgba(249, 115, 22, 0.06);
-    border-left: 3px solid var(--accent);
-    border-radius: 3px;
-    font-size: 0.9rem;
-    color: var(--fg-muted);
-  }
-
-  .private-note .warn {
-    color: var(--accent);
-    margin-right: 0.25rem;
-  }
-
-  .manifesto, .charter {
-    border-top: 1px solid var(--border);
-  }
-
-  .manifesto p {
-    max-width: 720px;
-    margin-bottom: 1.2rem;
-    color: var(--fg-muted);
-    font-size: 1.05rem;
-  }
-
-  .mono {
-    font-family: var(--font-mono);
-    color: var(--fg);
-    font-size: 0.95em;
-    background: var(--bg-elev);
-    padding: 0.1em 0.4em;
-    border-radius: 3px;
-    border: 1px solid var(--border);
-  }
-
-  .charter-list {
-    max-width: 720px;
-    list-style: none;
-    padding: 0;
-  }
-
-  .charter-list li {
-    padding: 0.75rem 0;
-    border-bottom: 1px solid var(--border);
-    color: var(--fg-muted);
-    font-size: 1rem;
-  }
-
-  .charter-list li strong {
-    color: var(--fg);
-    display: block;
-    margin-bottom: 0.2rem;
-    font-weight: 600;
-  }
-
-  .charter-list li:last-child {
-    border-bottom: none;
-  }
-
-  footer {
-    background: var(--bg-elev);
-    border-top: 1px solid var(--border);
-    padding: 3rem 0;
-    text-align: center;
-  }
-
-  .footer-inner p {
-    color: var(--fg-muted);
-    font-size: 0.9rem;
-    margin-bottom: 0.75rem;
-  }
-
-  .org-link {
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    letter-spacing: 0.05em;
-    margin-bottom: 1.25rem !important;
-  }
-
-  .org-link a {
-    color: var(--accent);
-  }
-
-  .legalese {
-    font-size: 0.8rem !important;
-    color: var(--fg-muted);
-    opacity: 0.7;
-  }
-
-  .easter-egg {
-    max-width: 140px;
-    margin-top: 1.5rem;
-    opacity: 0.6;
-    transition: opacity 0.2s ease, transform 0.2s ease;
-    cursor: pointer;
-  }
-
-  .easter-egg:hover {
-    opacity: 1;
-    transform: scale(1.1) rotate(-2deg);
-  }
-
   @media (max-width: 640px) {
     .hero {
       padding: 4rem 0 3rem;
     }
-    .hero-logo {
-      max-width: 300px;
-      width: 90%;
-    }
-    section {
+    section.catalog {
       padding: 3rem 0;
-    }
-    section h2 {
-      font-size: 1.6rem;
     }
   }
 </style>

@@ -1,0 +1,282 @@
+// SOURCE: zurp-astronomics-site — where the catalog is read: the explicit source (simulator | github) and the two backends behind the same interface
+// AUTHOR: engineer
+// DATE: 2026-10-06
+// STATUS: active
+// REVISED: 2026-10-06 (ticket #66) — listRepos() also gives each repository's licence, as GitHub detects it
+// REVISED: 2026-10-12 (ticket #96) — downloadAsset(): a file attached to a release (the firmware
+//   manifest and the files it names, src/lib/catalog/firmware.mjs); the releases carry their `assets`
+// REVISED: 2026-10-12 (ticket #101) — every asset carries `browser_download_url` in both backends
+//   (the page links the .hex and .img.xz there, src/lib/catalog/install.mjs); the simulator builds it
+//   as GitHub does
+// REVISED: 2026-10-21 (ticket #119) — listDir(): the entries of a folder of the default branch (the
+//   manual's, 9_Assets/manual/: read.mjs reads the files of the vocabulary and reports the others)
+//
+// THE SOURCE IS ALWAYS NAMED. The environment variable ZURP_CATALOG says where the build reads the
+// product repositories: `github` (the organisation on GitHub, what is deployed) or `simulator`
+// (imitation repositories in catalog-simulator/, offline). There is NO default, and a build without
+// it fails: a `simulator` default would deploy the simulator at the first omission in the deploy
+// workflow, a `github` default would make the Gitea CI (no GitHub token) call the GitHub API.
+// The same variable everywhere: .github/workflows/deploy.yml (github), CLAUDE.md `## Test`,
+// .gitea/workflows/ci.yml and the trials (simulator).
+//
+// THE SIMULATOR IS NEVER DEPLOYED. The site is only deployed by .github/workflows/deploy.yml, on
+// GitHub Actions, where GITHUB_SERVER_URL is https://github.com: there, `simulator` is refused,
+// whatever the workflow says.
+//
+// ONE INTERFACE, TWO BACKENDS. The reader (read.mjs) sees only:
+//   listRepos()               → [{ name, url, license }]  public repositories of the organisation;
+//                               `license` is the licence GitHub detects in the repository's LICENSE
+//                               (repoLicense below), null when there is none
+//   readFile(repo, path)      → Buffer | null    a file of the default branch, null when absent
+//   listDir(repo, path)       → [{ name, type }] | null  the entries right under a folder of the
+//                               default branch, by name; `type` is `file`, `dir` or `other` (a
+//                               symbolic link, a submodule: neither read nor walked). null when the
+//                               folder is absent (a 404) or is not a folder; any other failure throws
+//   listReleases(repo)        → [{ tag_name, published_at, draft, prerelease, assets }]  (GitHub's
+//                               objects; `assets`: the files attached, [{ id, name, size,
+//                               browser_download_url }] — the last one GitHub's public download URL,
+//                               https://github.com/<org>/<repo>/releases/download/<tag>/<name>)
+//   downloadAsset(repo, release, asset)
+//                             → Buffer           the bytes of `asset`, one of `release.assets`; a
+//                               failure (an asset listed and not served included) throws
+// so the simulator exercises exactly the code that reads GitHub.
+
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
+
+export const ORG = 'zUrp-Embedded';
+export const SOURCE_VAR = 'ZURP_CATALOG';
+export const TOKEN_VAR = 'ZURP_GITHUB_TOKEN';
+export const SOURCES = ['simulator', 'github'];
+
+/**
+ * The catalog source named by the environment. Throws when it is missing or unknown, and when the
+ * simulator is asked for on GitHub Actions (the only place the site is deployed from).
+ * @param {Record<string, string | undefined>} env
+ * @returns {'simulator' | 'github'}
+ */
+export function catalogSource(env = process.env) {
+  const value = (env[SOURCE_VAR] ?? '').trim();
+  if (!value) {
+    throw new Error(
+      `catalog: no source named. Set ${SOURCE_VAR} to choose where the product repositories are read:\n` +
+        `  ${SOURCE_VAR}=simulator   the imitation repositories of catalog-simulator/ (offline: tests, CI)\n` +
+        `  ${SOURCE_VAR}=github      the ${ORG} organisation on GitHub (what is deployed; token in ${TOKEN_VAR})\n` +
+        `e.g. \`${SOURCE_VAR}=simulator npm run build\`. There is no default, on purpose.`,
+    );
+  }
+  if (!SOURCES.includes(value)) {
+    throw new Error(`catalog: unknown source ${SOURCE_VAR}=${JSON.stringify(value)} — expected one of: ${SOURCES.join(', ')}`);
+  }
+  if (value === 'simulator' && (env.GITHUB_SERVER_URL ?? '').replace(/\/+$/, '') === 'https://github.com') {
+    throw new Error(
+      `catalog: ${SOURCE_VAR}=simulator refused on GitHub Actions — the site is deployed from there, and the simulator must never be. Use ${SOURCE_VAR}=github.`,
+    );
+  }
+  return /** @type {'simulator' | 'github'} */ (value);
+}
+
+/**
+ * The licence of a repository as GitHub's API lists it (`license` of a repository object:
+ * `{ key, name, spdx_id, url, node_id }`, or null when GitHub detects no LICENSE), kept as
+ * `{ spdx_id, name }`. GitHub says `spdx_id: "NOASSERTION"` (name « Other ») for a LICENSE it does
+ * not recognise. Nothing here is a judgement on the licence: the site shows what GitHub detects
+ * (the human's rule, ticket #66), and no licence is never an error.
+ * @param {unknown} raw
+ * @param {string} where for the message when `raw` is not a licence object
+ * @returns {{ spdx_id: string | null, name: string | null } | null}
+ */
+export function repoLicense(raw, where = 'repository') {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`catalog: ${where}: \`license\` is not a licence object (${JSON.stringify(raw)})`);
+  const text = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
+  return { spdx_id: text(raw.spdx_id), name: text(raw.name) };
+}
+
+// --- Simulator ----------------------------------------------------------------------------------
+
+/**
+ * Imitation repositories on disk:
+ *   <dir>/repos/<name>/…           the tree of repository <name> (default branch)
+ *   <dir>/releases/<name>.json     its releases, as GitHub's API lists them (absent: none), WITHOUT
+ *                                  `assets`: those are the files of the folder below
+ *   <dir>/releases/<name>/<tag>/…  the files attached to its release <tag> (absent: none); listed as
+ *                                  GitHub does, { id, name, size, browser_download_url }, by name
+ *   <dir>/licenses/<name>.json     its `license`, as GitHub's API lists it in the repositories of the
+ *                                  organisation (absent, or `null`: no LICENSE detected)
+ * @param {string} dir
+ */
+export function simulatorBackend(dir, { org = ORG } = {}) {
+  const root = resolve(dir);
+  const reposDir = join(root, 'repos');
+  if (!existsSync(reposDir) || !statSync(reposDir).isDirectory()) {
+    throw new Error(`catalog (simulator): no repository directory at ${reposDir}`);
+  }
+  const repoDir = (repo) => {
+    const p = resolve(reposDir, repo);
+    if (!p.startsWith(reposDir + sep)) throw new Error(`catalog (simulator): bad repository name ${JSON.stringify(repo)}`);
+    return p;
+  };
+  const releasesDir = join(root, 'releases');
+  const assetDir = (repo, tag) => {
+    repoDir(repo);
+    const p = resolve(releasesDir, repo, String(tag));
+    if (!p.startsWith(join(releasesDir, repo) + sep)) throw new Error(`catalog (simulator): bad release tag ${JSON.stringify(tag)} of ${repo}`);
+    return p;
+  };
+  return {
+    describe: `simulator (${root})`,
+    async listRepos() {
+      return readdirSync(reposDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name)
+        .sort()
+        .map((name) => {
+          const p = join(root, 'licenses', `${name}.json`);
+          const license = existsSync(p) ? repoLicense(JSON.parse(readFileSync(p, 'utf8')), `simulator ${p}`) : null;
+          return { name, url: `https://github.com/${org}/${name}`, license };
+        });
+    },
+    async readFile(repo, path) {
+      const base = repoDir(repo);
+      const p = resolve(base, path);
+      if (!p.startsWith(base + sep)) throw new Error(`catalog (simulator): path outside the repository: ${repo}/${path}`);
+      return existsSync(p) && statSync(p).isFile() ? readFileSync(p) : null;
+    },
+    async listDir(repo, path) {
+      const base = repoDir(repo);
+      const p = resolve(base, path);
+      if (!p.startsWith(base + sep)) throw new Error(`catalog (simulator): path outside the repository: ${repo}/${path}`);
+      if (!existsSync(p) || !statSync(p).isDirectory()) return null;
+      return readdirSync(p, { withFileTypes: true })
+        .map((e) => ({ name: e.name, type: e.isFile() ? 'file' : e.isDirectory() ? 'dir' : 'other' }))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    },
+    async listReleases(repo) {
+      repoDir(repo);
+      const p = join(root, 'releases', `${repo}.json`);
+      if (!existsSync(p)) return [];
+      const list = JSON.parse(readFileSync(p, 'utf8'));
+      if (!Array.isArray(list)) throw new Error(`catalog (simulator): ${p} is not a JSON array`);
+      return list.map((r) => {
+        if ('assets' in r) throw new Error(`catalog (simulator): ${p}: release ${JSON.stringify(r.tag_name)} lists \`assets\` — its files are those of ${join(root, 'releases', repo, String(r.tag_name))}/`);
+        const dir = assetDir(repo, r.tag_name);
+        const names = existsSync(dir) && statSync(dir).isDirectory() ? readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name).sort() : [];
+        const download = (name) => `https://github.com/${org}/${repo}/releases/download/${encodeURIComponent(String(r.tag_name))}/${encodeURIComponent(name)}`;
+        return { ...r, assets: names.map((name, i) => ({ id: i + 1, name, size: statSync(join(dir, name)).size, browser_download_url: download(name) })) };
+      });
+    },
+    async downloadAsset(repo, release, asset) {
+      const dir = assetDir(repo, release.tag_name);
+      const p = resolve(dir, asset.name);
+      if (!p.startsWith(dir + sep) || !existsSync(p)) {
+        throw new Error(`catalog (simulator): release ${JSON.stringify(release.tag_name)} of ${repo} has no file ${JSON.stringify(asset.name)}`);
+      }
+      return readFileSync(p);
+    },
+  };
+}
+
+// --- GitHub (REST) ------------------------------------------------------------------------------
+
+/** URL of the `rel="next"` page in a Link header, or null. */
+function nextLink(link) {
+  if (!link) return null;
+  for (const part of link.split(',')) {
+    const m = part.match(/<([^>]+)>\s*;\s*rel="?next"?/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/**
+ * The organisation's public repositories through the REST API (api.github.com only: files are read
+ * through the contents endpoint, with the token, never from raw.githubusercontent.com, which is
+ * rate-limited per IP); a file attached to a release through the release-asset endpoint, with the
+ * token, never from the github.com download URL (ticket #96) — that URL, `browser_download_url`, is
+ * only LINKED by the product page, for the .hex and .img.xz (ticket #101). Any failure throws: no retry, no
+ * fallback (the build fails, Pages keeps the previous deployment).
+ * @param {{ token?: string, org?: string, fetchImpl?: typeof fetch, api?: string }} options
+ */
+export function githubBackend({ token, org = ORG, fetchImpl = globalThis.fetch, api = 'https://api.github.com' } = {}) {
+  let requests = 0;
+  async function get(url, { accept = 'application/vnd.github+json', allow404 = false } = {}) {
+    const headers = {
+      Accept: accept,
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'zurp-embedded-site',
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    requests++;
+    let res;
+    try {
+      res = await fetchImpl(url, { headers });
+    } catch (e) {
+      throw new Error(`catalog (github): GET ${url} failed: ${e?.message ?? e}`);
+    }
+    if (res.status === 404 && allow404) return null;
+    if (!res.ok) {
+      const body = (await res.text().catch(() => '')).slice(0, 300);
+      const remaining = res.headers.get('x-ratelimit-remaining');
+      const limit = remaining === '0' ? ' (rate limit exhausted)' : '';
+      throw new Error(`catalog (github): GET ${url} → HTTP ${res.status}${limit} ${body}`.trim());
+    }
+    return res;
+  }
+  async function getAll(url) {
+    const all = [];
+    for (let next = url; next; ) {
+      const res = await get(next);
+      const page = await res.json();
+      if (!Array.isArray(page)) throw new Error(`catalog (github): GET ${next} did not return a list`);
+      all.push(...page);
+      next = nextLink(res.headers.get('link'));
+    }
+    return all;
+  }
+  const repoPath = (repo) => `${api}/repos/${encodeURIComponent(org)}/${encodeURIComponent(repo)}`;
+  return {
+    describe: `GitHub (${org}, ${token ? 'authenticated' : 'unauthenticated'})`,
+    get requests() {
+      return requests;
+    },
+    async listRepos() {
+      const repos = await getAll(`${api}/orgs/${encodeURIComponent(org)}/repos?type=public&per_page=100`);
+      return repos
+        .map((r) => ({ name: r.name, url: r.html_url, license: repoLicense(r.license, `repository ${r.name}`) }))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    },
+    async readFile(repo, path) {
+      const encoded = path.split('/').map(encodeURIComponent).join('/');
+      const res = await get(`${repoPath(repo)}/contents/${encoded}`, { accept: 'application/vnd.github.raw+json', allow404: true });
+      return res ? Buffer.from(await res.arrayBuffer()) : null;
+    },
+    // The contents endpoint lists a folder as an array (up to 1,000 entries, no pagination: far more
+    // than a manual holds); a file there is an object: not a folder. GitHub's types: file, dir,
+    // symlink, submodule.
+    async listDir(repo, path) {
+      const encoded = path.split('/').map(encodeURIComponent).join('/');
+      const url = `${repoPath(repo)}/contents/${encoded}`;
+      const res = await get(url, { allow404: true });
+      if (!res) return null;
+      const list = await res.json();
+      if (!Array.isArray(list)) return null;
+      return list
+        .map((e) => {
+          if (!e || typeof e.name !== 'string') throw new Error(`catalog (github): GET ${url} listed an entry without a name`);
+          return { name: e.name, type: e.type === 'file' ? 'file' : e.type === 'dir' ? 'dir' : 'other' };
+        })
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    },
+    async listReleases(repo) {
+      return getAll(`${repoPath(repo)}/releases?per_page=100`);
+    },
+    // GitHub answers either a 302 to a storage host or the bytes themselves (200): its REST docs ask
+    // to handle both. fetch follows the redirect, and drops `Authorization` when the redirect changes
+    // origin (Node's fetch, as the Fetch standard says): the token never goes to the storage host.
+    async downloadAsset(repo, release, asset) {
+      const res = await get(`${repoPath(repo)}/releases/assets/${encodeURIComponent(asset.id)}`, { accept: 'application/octet-stream' });
+      return Buffer.from(await res.arrayBuffer());
+    },
+  };
+}

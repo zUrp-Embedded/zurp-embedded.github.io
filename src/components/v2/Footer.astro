@@ -1,0 +1,131 @@
+---
+// SOURCE: zurp-astronomics-site — main site (v2) footer: the footer copy (jokes) on a black band
+// AUTHOR: engineer
+// DATE: 2026-10-03
+// STATUS: active
+// REVISED: 2026-10-06 (ticket #49) — every text comes from content/ (site.yml, footer/legalese.md)
+//
+// The copy began as the v1 footer's, word for word (v1 deleted in ticket #35), and lives in
+// content/site.yml (`name`, `affiliation`, `signature`, `org`, `footer`) and content/footer/legalese.md: home line
+// (the site's signature) without a product, product line with one.
+// The "Low-Tech & DIY" sticker (src/assets/brand/Low_tech_DIY.png, the sticker of the site of
+// 8c2fc77) signs the footer of EVERY page of the main site, home included, small (~140 px, the size
+// it had there). Ticket #14 had left it out of the home page (its header shows the same poster full
+// size); the human found the gap odd, and ticket #16 put it back: do not reintroduce a condition on
+// `productName` here, which only picks the footer's copy line. Variants at 140 and 280 px (1x / 2x)
+// only: it is never displayed wider. Ticket #35 removed the "v1" link with the v1 archive it led to.
+// Ticket #23: the sticker is a link back to the top of the page (`#top`, the id on <body> in
+// V2Layout.astro), with nothing visible added — no text, no icon: the human wanted it unannounced,
+// the hover (it lights up, as on the old site; it does not move) is the hint. Its accessible name is
+// "Back to top" (aria-label), so it is not silent for screen readers. Smooth scroll comes from
+// `scroll-behavior` on html, already turned off under prefers-reduced-motion. No JavaScript.
+// The look is the old site's footer (src/pages/index.astro of 8c2fc77): raised background, one thin
+// rule, the GitHub line in monospace, the signature, the legalese, the sticker.
+// `fit="outside"` (ticket #43, Astro 7): the sticker is 1187 × 739 and 140 px gives an 87 px
+// height, so Astro 7 asks for its 280 px variant at a rounded height and its image service CROPS to
+// that by default. "outside" (sharp's fit: keep the ratio, cover the box) scales instead: the whole
+// sticker. `fit` never reaches the HTML.
+import { Image } from 'astro:assets';
+import sticker from '../../assets/brand/Low_tech_DIY.png';
+import { fill, inlineMarkdown, readMarkdown, siteContent, siteView } from '../../lib/content.mjs';
+
+interface Props {
+  productName?: string;
+}
+
+const { productName } = Astro.props;
+
+const site = siteContent();
+const legalese = inlineMarkdown(readMarkdown('footer/legalese.md'));
+---
+
+<footer class="foot">
+  <div class="z2-container foot-inner">
+    <p class="org-link">
+      {site.footer.orgLabel} <a href={site.org.url}>{site.org.handle}</a>
+    </p>
+    {
+      productName ? (
+        <p>
+          <em>{fill(site.footer.productLine, { ...siteView(site), product: productName })}</em>
+        </p>
+      ) : (
+        <p>
+          <em>{site.signature}</em>
+        </p>
+      )
+    }
+    <p class="legalese" set:html={legalese} />
+    <a class="lowtech-link" href="#top" aria-label={site.footer.backToTop}>
+      <Image
+        src={sticker}
+        alt={site.footer.panelAlt}
+        title={site.footer.panelTitle}
+        width={140}
+        widths={[140, 280]}
+        fit="outside"
+        sizes="140px"
+        format="webp"
+        quality={72}
+        loading="lazy"
+        class="lowtech-panel"
+      />
+    </a>
+  </div>
+</footer>
+
+<style>
+  .foot {
+    margin-top: 4rem;
+    padding: 3rem 0;
+    text-align: center;
+    background: var(--bg-elev);
+    border-top: 1px solid var(--border);
+  }
+
+  .foot p {
+    color: var(--fg-muted);
+    font-size: 0.9rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .foot .org-link {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    letter-spacing: 0.05em;
+    margin-bottom: 1.25rem;
+  }
+
+  .foot .legalese {
+    font-size: 0.8rem;
+    opacity: 0.7;
+  }
+
+  /* The back-to-top link wraps the sticker tightly, so the focus ring draws round it. */
+  .lowtech-link {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    margin: 1.5rem auto 0;
+  }
+
+  /* The old site's sticker (`.easter-egg`), without its tilt and zoom on hover: it lights up only. */
+  .lowtech-panel {
+    display: block;
+    width: 140px;
+    max-width: 100%;
+    height: auto;
+    opacity: 0.6;
+    transition: opacity 0.2s ease;
+  }
+
+  .lowtech-link:hover,
+  .lowtech-link:focus-visible {
+    opacity: 1;
+  }
+
+  .lowtech-link:hover .lowtech-panel,
+  .lowtech-link:focus-visible .lowtech-panel {
+    opacity: 1;
+  }
+</style>

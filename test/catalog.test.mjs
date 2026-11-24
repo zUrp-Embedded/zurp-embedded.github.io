@@ -1,0 +1,423 @@
+// SOURCE: zurp-astronomics-site — the tests of the site: the catalog rules we wrote ourselves, and the README kit the organisation consumes
+// AUTHOR: engineer
+// DATE: 2026-10-06
+// REVISED: 2026-10-10 (ticket #79) — one test per rule of the list the human kept, nothing else: the
+//   site is a showcase the human looks at on every deployment; only what breaks invisibly is tested.
+// REVISED: 2026-10-10 (ticket #83) — the product header's poster is the relative 9_Assets/<slug>.webp,
+//   its block checked byte for byte; the org README keeps the absolute poster URLs
+// REVISED: 2026-10-10 (ticket #92) — the products folder of content/ is gone, and with it its rules
+//   (an invalid local sheet fails the build, the repository wins over the folder, the org as
+//   « Source » link); test 8: the offline build publishes the eight products, Cyclops and Wraith
+//   included
+// REVISED: 2026-10-12 (ticket #96) — test 7: the guide's workflow extract keeps its GitHub
+//   expressions `${{ … }}` (not Mustache markers); the firmware has its own file, test/firmware.test.mjs
+// REVISED: 2026-10-12 (ticket #101) — test 7: the guide's § 6 gives the README sentence of the
+//   contract word for word, and no ESP Launchpad link any more; what installs has its own file,
+//   test/install.test.mjs
+// REVISED: 2026-10-13 (ticket #101, review of PR #103) — test 4: the draft carries the latest
+//   `published_at`, so the `draft` flag alone is what leaves it out
+// REVISED: 2026-10-13 (ticket #102) — test 7: the ESP README sentence names Firefox, Chrome and Edge
+//   (ESP Web Tools' browsers), and no « (Chrome or Edge) » is left in the rendered guide
+// REVISED: 2026-10-21 (ticket #119) — test 7: the guide's § 7 table of the manual's tabs and their
+//   anchors, from the vocabulary of content/site.yml
+// REVISED: 2026-10-20 (ticket #115) — test 7: the footer block readme-kit/footer.md, byte for byte,
+//   and the guide naming it; test 9: the signature image follows content/site.yml
+// STATUS: active
+//
+// Run with `npm test` (needs `npm ci`). A case the simulator does not hold is built in a temporary
+// simulator (makeSim); a temporary site root (tempRoot) when the build's snapshot is needed: the
+// loader empties .zurp-catalog/ of its root, never the repository's.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
+
+import { catalogSource, githubBackend, simulatorBackend } from '../src/lib/catalog/source.mjs';
+import { readRepoProducts } from '../src/lib/catalog/read.mjs';
+import { readAndSnapshot } from '../src/lib/catalog/loader.mjs';
+import { catalogContent, licenseContent, manualContent, siteContent } from '../src/lib/content.mjs';
+import { licenseStamps } from '../src/lib/license-stamp.mjs';
+import { loadBuiltCatalog } from '../scripts/lib/catalog.mjs';
+import { SIGNATURE_WIDTH, signaturePng, signatureTexts } from '../src/lib/signature-image.mjs';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SIM = join(ROOT, 'catalog-simulator');
+const sectionIds = catalogContent(ROOT).sections.map((s) => s.id);
+const SIMULATOR = { ZURP_CATALOG: 'simulator' };
+
+const VALID_SHEET = `name: Gizmo
+tagline: A gizmo.
+slogan: Gizmo all the things
+category: Gadget
+section: libraries
+status: wip
+description:
+  - First paragraph.
+poster: poster.png
+posterAlt: Gizmo poster.
+accent: '#123456'
+`;
+const PNG = await sharp({ create: { width: 4, height: 4, channels: 3, background: '#123456' } }).png().toBuffer();
+const gizmo = (sheet = VALID_SHEET, extra = {}) => ({ '9_Assets/zurp.yml': sheet, '9_Assets/poster.png': PNG, ...extra });
+
+/** A temporary simulator: repos { name: { path: content } }, releases { name: [...] }, licenses { name: license }. */
+function makeSim(repos, { releases = {}, licenses = {} } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'zurp-sim-'));
+  const write = (path, content) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+  };
+  for (const [name, files] of Object.entries(repos)) {
+    mkdirSync(join(dir, 'repos', name), { recursive: true });
+    for (const [path, content] of Object.entries(files)) write(join(dir, 'repos', name, path), content);
+  }
+  for (const [name, list] of Object.entries(releases)) write(join(dir, 'releases', `${name}.json`), JSON.stringify(list));
+  for (const [name, license] of Object.entries(licenses)) write(join(dir, 'licenses', `${name}.json`), JSON.stringify(license));
+  return dir;
+}
+const readSim = (dir) => readRepoProducts(simulatorBackend(dir), { sectionIds });
+
+/** A temporary site root: a copy of content/ and of the simulator, which `edit(simDir)` may change. */
+function tempRoot(edit = () => {}) {
+  const root = mkdtempSync(join(tmpdir(), 'zurp-root-'));
+  cpSync(join(ROOT, 'content'), join(root, 'content'), { recursive: true });
+  cpSync(SIM, join(root, 'catalog-simulator'), { recursive: true });
+  edit(join(root, 'catalog-simulator'));
+  return root;
+}
+
+/** The build's snapshot of a temporary root, and the catalog the scripts after the build assemble from it. */
+async function built(root) {
+  await readAndSnapshot({ root, env: SIMULATOR, sectionIds });
+  const snapshotFile = join(root, '.zurp-catalog', 'remote.json');
+  return { snapshotFile, ...(await loadBuiltCatalog({ snapshotFile, root })) };
+}
+
+// 1 -------------------------------------------------------------------------------------------------
+test('1. the build fails without a named catalog source; `simulator` is refused on GitHub Actions', async () => {
+  assert.throws(() => catalogSource({}), /no source named/);
+  await assert.rejects(readAndSnapshot({ root: tempRoot(), env: {}, sectionIds }), /no source named/);
+  const onActions = { ZURP_CATALOG: 'simulator', GITHUB_SERVER_URL: 'https://github.com' };
+  assert.throws(() => catalogSource(onActions), /refused on GitHub Actions/);
+  await assert.rejects(readAndSnapshot({ root: tempRoot(), env: onActions, sectionIds }), /refused on GitHub Actions/);
+  assert.equal(catalogSource({ ZURP_CATALOG: 'github', GITHUB_SERVER_URL: 'https://github.com' }), 'github');
+});
+
+// 2 -------------------------------------------------------------------------------------------------
+test('2. an invalid repository sheet or an unreadable poster skips that product, the others are read', async () => {
+  const sim = makeSim({
+    alpha: gizmo(VALID_SHEET.replace('name: Gizmo\n', '')),
+    bravo: { ...gizmo(), '9_Assets/poster.png': 'not an image' },
+    charlie: gizmo(),
+  });
+  const { products, skipped } = await readSim(sim);
+  assert.deepEqual(products.map((p) => p.slug), ['charlie']);
+  assert.deepEqual(skipped.map((s) => s.repo), ['alpha', 'bravo']);
+  assert.match(skipped[0].problems.join('\n'), /repository alpha .*field `name`: missing/);
+  assert.match(skipped[1].problems.join('\n'), /repository bravo .*field `poster`/);
+});
+
+// 3 -------------------------------------------------------------------------------------------------
+test('3. a repository without 9_Assets/zurp.yml is not in the catalog, without an error', async () => {
+  const sim = makeSim({ '.github': { 'profile/README.md': '# org\n' }, docs: { 'README.md': '# docs\n', '9_Assets/notes.txt': 'x' }, charlie: gizmo() });
+  const { products, skipped } = await readSim(sim);
+  assert.deepEqual(products.map((p) => p.slug), ['charlie']);
+  assert.deepEqual(skipped, []);
+});
+
+// 4 -------------------------------------------------------------------------------------------------
+test('4. the status is the sheet’s, the version is the tag of the latest release; an unknown status skips the product', async () => {
+  const sheet = (status) => VALID_SHEET.replace('status: wip', `status: ${status}`);
+  const rel = (tag, at, more = {}) => ({ tag_name: tag, published_at: at, draft: false, prerelease: false, ...more });
+  const sim = makeSim(
+    { alpha: gizmo(sheet('released')), bravo: gizmo(sheet('wip')), charlie: gizmo(sheet('future')), delta: gizmo(sheet('beta')) },
+    {
+      releases: {
+        bravo: [rel('v1.0', '2026-09-01T00:00:00Z'), rel('v2.0-rc1', '2026-10-01T00:00:00Z', { prerelease: true }), rel('v3', '2026-10-05T00:00:00Z', { draft: true })],
+        delta: [rel('v1.0', '2026-09-01T00:00:00Z')],
+      },
+    },
+  );
+  const { products, skipped } = await readSim(sim);
+  const by = Object.fromEntries(products.map((p) => [p.slug, p]));
+  assert.deepEqual([by.alpha.status, by.alpha.release], ['released', null], 'released by its sheet, without any release');
+  assert.deepEqual([by.bravo.status, by.bravo.release?.tag], ['wip', 'v2.0-rc1'], 'a release does not change the status');
+  assert.equal(by.charlie.status, 'future');
+  assert.deepEqual(skipped.map((s) => s.repo), ['delta']);
+  assert.match(skipped[0].problems.join('\n'), /field `status`: "beta" is not one of/);
+});
+
+// 5 -------------------------------------------------------------------------------------------------
+test('5. licences: a recognised spdx_id gives its stamp, NOASSERTION the generic one, null none; the hardware licence is the first line of LICENSE-HARDWARE, none without the file', async () => {
+  const texts = licenseContent(ROOT);
+  const sim = makeSim(
+    {
+      alpha: gizmo(VALID_SHEET, { 'LICENSE-HARDWARE': '\n  Open Community License (OCL v1.1)\n\nThe text of the licence.\n' }),
+      bravo: gizmo(),
+      charlie: gizmo(),
+    },
+    {
+      licenses: {
+        alpha: { key: 'gpl-3.0', name: 'GNU General Public License v3.0', spdx_id: 'GPL-3.0', url: null, node_id: 'n' },
+        bravo: { key: 'other', name: 'Other', spdx_id: 'NOASSERTION', url: null, node_id: 'o' },
+        charlie: null,
+      },
+    },
+  );
+  const { products } = await readSim(sim);
+  const stamps = Object.fromEntries(products.map((p) => [p.slug, { p, ...licenseStamps(p, texts) }]));
+  assert.equal(stamps.alpha.software.text, 'Software · GPL-3.0');
+  assert.equal(stamps.bravo.software.label, texts.software.unrecognised);
+  assert.equal(stamps.charlie.p.license, null);
+  assert.equal(stamps.charlie.software, null);
+  assert.deepEqual(stamps.alpha.p.hardwareLicense, { title: 'Open Community License (OCL v1.1)' });
+  assert.equal(stamps.alpha.hardware.text, 'Hardware · OCL v1.1');
+  assert.equal(stamps.bravo.p.hardwareLicense, null, 'no LICENSE-HARDWARE: no hardware licence');
+  assert.equal(stamps.bravo.hardware, null);
+});
+
+// 6 -------------------------------------------------------------------------------------------------
+/** A fetch answering like api.github.com for `repos` and `files` ({ 'Repo/path': bytes }); 404 elsewhere; `fail` answers `status` to URLs holding `match`. */
+function mockGitHub({ repos, files, fail }) {
+  return async (url) => {
+    if (fail && url.includes(fail.match)) return new Response('boom', { status: fail.status });
+    const path = new URL(url).pathname;
+    if (path === '/orgs/zUrp-Embedded/repos') {
+      return Response.json(repos.map((name) => ({ name, html_url: `https://github.com/zUrp-Embedded/${name}`, license: null })));
+    }
+    const m = path.match(/^\/repos\/zUrp-Embedded\/([^/]+)\/(contents\/(.+)|releases)$/);
+    if (m?.[2] === 'releases') return Response.json([]);
+    const key = m && `${decodeURIComponent(m[1])}/${decodeURIComponent(m[3])}`;
+    return key in files ? new Response(files[key]) : new Response('{"message":"Not Found"}', { status: 404 });
+  };
+}
+
+test('6. GitHub: a failed request fails the build, except the 404 of a sheet, a poster or LICENSE-HARDWARE', async () => {
+  const repos = ['Alpha', 'Bravo', 'Charlie'];
+  const files = { 'Bravo/9_Assets/zurp.yml': VALID_SHEET, 'Charlie/9_Assets/zurp.yml': VALID_SHEET, 'Charlie/9_Assets/poster.png': PNG };
+  const read = (fail) => readRepoProducts(githubBackend({ fetchImpl: mockGitHub({ repos, files, fail }) }), { sectionIds });
+  // Alpha: no sheet (404); Bravo: no poster (404), skipped; Charlie: no LICENSE-HARDWARE (404).
+  const { products, skipped } = await read();
+  assert.deepEqual(products.map((p) => [p.slug, p.hardwareLicense]), [['charlie', null]]);
+  assert.deepEqual(skipped.map((s) => s.repo), ['Bravo']);
+  for (const fail of [
+    { match: '/orgs/', status: 502 },
+    { match: 'Charlie/contents/9_Assets/zurp.yml', status: 500 },
+    { match: 'Charlie/contents/9_Assets/poster.png', status: 403 },
+    { match: 'Charlie/contents/LICENSE-HARDWARE', status: 500 },
+    { match: 'Charlie/releases', status: 502 },
+  ]) {
+    await assert.rejects(read(fail), new RegExp(`HTTP ${fail.status}`), fail.match);
+  }
+  const offline = async () => {
+    throw new TypeError('fetch failed');
+  };
+  await assert.rejects(readRepoProducts(githubBackend({ fetchImpl: offline }), { sectionIds }), /fetch failed/);
+});
+
+// The product header of Kraken, exactly as campaign #81 fixed it (ticket #83); the others differ by the slug only.
+const KRAKEN_HEADER = `<!-- zurp-readme-header:begin — paste this block once, never again: the poster and the badges update themselves at each build of the site — do not edit it -->
+<div align="center">
+
+<a href="https://zurp-embedded.github.io/kraken/"><img src="9_Assets/kraken.webp" alt="zUrp Embedded product poster" width="420"></a>
+
+![status](https://img.shields.io/endpoint?url=https%3A%2F%2Fzurp-embedded.github.io%2Fbrand%2Fstatus%2Fkraken.json)
+![software licence](https://zurp-embedded.github.io/brand/badges/kraken/software.svg)
+![hardware licence](https://zurp-embedded.github.io/brand/badges/kraken/hardware.svg)
+
+</div>
+
+<!-- zurp-readme-header:end -->`;
+
+// The footer block of every product README (ticket #115), byte for byte: the plate (a link to the
+// site), the signature, the two links in text — and nothing else, no product name.
+const FOOTER = `<!-- zurp-readme-footer:begin — paste this block once, at the end of the README, never again: the plate and the signature update themselves at each build of the site — do not edit it -->
+<p align="center"><a href="https://zurp-embedded.github.io/"><img src="https://zurp-embedded.github.io/brand/zurp-plate.webp" alt="zUrp Embedded corporate logotype" width="400"></a></p>
+
+<p align="center"><img src="https://zurp-embedded.github.io/brand/signature.png" alt="zUrp Embedded signature" width="400"></p>
+
+<p align="center"><a href="https://zurp-embedded.github.io/">Website</a> · <a href="https://github.com/zUrp-Embedded">GitHub organisation</a></p>
+<!-- zurp-readme-footer:end -->`;
+
+// 7 -------------------------------------------------------------------------------------------------
+test('7. the README kit is generated from the built catalog: one header per product, no Mustache marker left empty', async () => {
+  const root = tempRoot();
+  const { snapshotFile, products } = await built(root);
+  const out = join(root, 'kit');
+  execFileSync(process.execPath, [join(ROOT, 'scripts', 'readme-kit.mjs'), '--catalog', snapshotFile, '--out', out], { stdio: 'pipe' });
+  const headers = readdirSync(join(out, 'readme-kit', 'repos')).sort();
+  assert.deepEqual(headers, products.map((p) => `${p.slug}.md`).sort(), 'one header per product of the built catalog');
+  const files = ['profile/README.md', 'readme-kit/README.md', 'readme-kit/footer.md', ...headers.map((h) => `readme-kit/repos/${h}`)];
+  for (const f of files) {
+    // A GitHub Actions expression `${{ … }}` of a workflow extract is text, not a marker (guide, § 6).
+    const text = readFileSync(join(out, f), 'utf8').replace(/\$\{\{ [^{}]+ \}\}/g, '');
+    assert.doesNotMatch(text, /\{\{|\}\}|<%|%>/, `${f}: a marker left as is`);
+    assert.doesNotMatch(text, /="\s*"|\]\(\s*\)|!\[\s*\]|<a href="[^"]+">\s*<\/a>|<!--\s*—/, `${f}: a marker filled with nothing`);
+  }
+  assert.ok(products.some((p) => p.slug === 'kraken'), 'Kraken is in the built catalog (its header is checked as written)');
+  for (const p of products) {
+    const header = readFileSync(join(out, 'readme-kit', 'repos', `${p.slug}.md`), 'utf8');
+    // Ticket #83: the poster by its relative path in the product repository; the badges stay absolute.
+    assert.ok(header.includes(`<img src="9_Assets/${p.slug}.webp"`) && header.includes(`/brand/badges/${p.slug}/hardware.svg`), p.slug);
+    assert.ok(!header.includes('/brand/posters/'), `${p.slug}: no poster URL in the product header`);
+    // Byte for byte, the block of the human's decision (campaign #81): the product READMEs carry it verbatim.
+    assert.equal(header.trim(), KRAKEN_HEADER.replaceAll('kraken', p.slug), p.slug);
+  }
+  // Ticket #115: one footer block for every product, byte for byte, out of repos/ (it names no product).
+  assert.equal(readFileSync(join(out, 'readme-kit', 'footer.md'), 'utf8').trim(), FOOTER);
+  // The guide's § 6 (tickets #96, #101): the workflow extract keeps its expression, the dispatch names the site's repository.
+  const guide = readFileSync(join(out, 'readme-kit', 'README.md'), 'utf8');
+  // Ticket #115: § 2 names the footer block, where it is published, its markers, its two images, and
+  // its skeleton closes on it in place of the hand-written signature.
+  assert.ok(guide.includes('[`zUrp-Embedded/.github` → `readme-kit/footer.md`](https://github.com/zUrp-Embedded/.github/blob/main/readme-kit/footer.md)'));
+  assert.ok(guide.includes('<!-- zurp-readme-footer:begin … -->') && guide.includes('<!-- zurp-readme-footer:end -->'));
+  assert.ok(guide.includes('https://zurp-embedded.github.io/brand/zurp-plate.webp') && guide.includes('https://zurp-embedded.github.io/brand/signature.png'));
+  assert.ok(!guide.includes('… la signature …'), 'the skeleton shows the footer block, not a hand-written signature');
+  // Ticket #98: the org's real secret, no placeholder left.
+  assert.ok(guide.includes('GH_TOKEN: ${{ secrets.ZURP_SITE_DISPATCH }}'), 'the GitHub expression of the workflow extract, as written');
+  assert.ok(!guide.includes('<SECRET>'), 'no <SECRET> placeholder left in the guide');
+  assert.ok(guide.includes('gh api repos/zUrp-Embedded/zurp-embedded.github.io/dispatches -f event_type=zurp-catalog'));
+  // Ticket #101: the README sentence of the contract (the human's, 2026-10-12), word for word — with
+  // the browsers for an ESP, without them for an STM32 or an RPi — and no ESP Launchpad left.
+  // Ticket #102: the ESP sentence names the browsers of ESP Web Tools (the human's, 2026-10-12), not ESP Launchpad's.
+  assert.ok(guide.includes('Install it from your browser on the [product page](https://zurp-embedded.github.io/<slug>/) (Firefox, Chrome or Edge).\n'));
+  assert.ok(!guide.includes('(Chrome or Edge)'), 'no ESP Launchpad browser list left in the guide');
+  assert.ok(guide.includes('Install it from your browser on the [product page](https://zurp-embedded.github.io/<slug>/).\n'));
+  assert.ok(guide.includes('## 6. Publier un logiciel'));
+  assert.doesNotMatch(guide, /launchpad|zurp-firmware|flashConfigURL/i);
+  // Ticket #119: § 7's table of the tabs and their anchors come from the vocabulary of
+  // content/site.yml, in its order; the template lists no tab by hand; asking for a tab is said.
+  const { tabs } = manualContent(ROOT);
+  const rows = tabs.map((t) => `| ${t.title} | \`${t.id}.en.md\` | ${t.holds} |`).join('\n');
+  assert.ok(guide.includes(`| onglet | fichier | ce qu'il porte |\n|---|---|---|\n${rows}\n\n`), 'the table of § 7, row by row from the vocabulary');
+  assert.ok(guide.includes(`: ${tabs.map((t) => `\`https://zurp-embedded.github.io/<slug>/#${t.id}\``).join(', ')}.\n`), 'the anchors of § 7');
+  assert.ok(guide.includes('### Demander un onglet') && guide.includes("à l'architecte du site"), 'how to ask for a tab');
+  assert.ok(guide.includes('**signalé\n  au build**'), 'a name outside the vocabulary is reported');
+  const template = readFileSync(join(ROOT, 'content', 'readme-kit', 'guide.md'), 'utf8');
+  for (const t of tabs) assert.ok(!template.includes(`\`${t.id}.en.md\``) && !template.includes(`#${t.id}\``), `${t.id}: not written by hand in the template`);
+  const org = readFileSync(join(out, 'profile', 'README.md'), 'utf8');
+  for (const p of products) assert.ok(org.includes(`>${p.name}</a>`), `${p.name} in the organisation README`);
+  // Every product has its repository (ticket #92): its GitHub badge links it, none is left without.
+  for (const p of products) assert.ok(org.includes(`<a href="${p.repo}"><img src="https://img.shields.io/badge/-GitHub-`), `${p.slug}: GitHub badge in the organisation README`);
+  // The org README lives in another repository: its posters keep their absolute URLs (ticket #83).
+  for (const p of products) assert.ok(org.includes(`/brand/posters/${p.slug}.webp`), `${p.slug}: poster URL in the organisation README`);
+});
+
+// 8 -------------------------------------------------------------------------------------------------
+test('8. the offline build publishes every product of the simulator — the eight of the organisation, Cyclops and Wraith included — each with its repository as « Source » link', async () => {
+  const orgUrl = siteContent(ROOT).org.url.replace(/\/+$/, '');
+  const { products, skipped } = await built(tempRoot());
+  assert.deepEqual(skipped, [], 'no sheet of the simulator is skipped');
+  const repos = readdirSync(join(SIM, 'repos'), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  assert.deepEqual(products.map((p) => p.slug).sort(), repos.map((r) => r.toLowerCase()).sort(), 'one product per repository of the simulator');
+  assert.equal(products.length, 8, 'the eight products of the organisation');
+  for (const slug of ['cyclops', 'wraith']) assert.ok(products.some((p) => p.slug === slug), `${slug} is published`);
+  for (const p of products) assert.equal(p.repo, `${orgUrl}/${p.slug}`, `${p.slug}: its « Source » link is its repository`);
+});
+
+// 9 -------------------------------------------------------------------------------------------------
+test('9. the signature image of the README footer is drawn from content/site.yml — `signature` (name, affiliation) and `header.subtitle`: change one, the image changes; an opaque PNG, 800 px wide', async () => {
+  const fontFile = join(ROOT, 'src', 'assets', 'fonts', 'BlackOpsOne-Regular.ttf');
+  const image = (root) => signaturePng(signatureTexts(siteContent(root)), { fontFile });
+  /** A temporary root whose content/site.yml has `from` replaced by `to`. */
+  const editedSite = (from, to) => {
+    const root = tempRoot();
+    const file = join(root, 'content', 'site.yml');
+    const yml = readFileSync(file, 'utf8');
+    assert.ok(yml.includes(from), `site.yml holds ${from}`);
+    writeFileSync(file, yml.replace(from, to));
+    return root;
+  };
+  const site = siteContent(ROOT);
+  assert.deepEqual(signatureTexts(site), { signature: 'zUrp Embedded — a subsidiary of zUrp Industries.', subtitle: 'Low-tech · DIY · Moon-shot embedded' });
+  const original = await image(ROOT);
+  assert.ok(original.equals(await image(tempRoot())), 'the same texts draw the same bytes');
+  const meta = await sharp(original).metadata();
+  assert.equal(meta.format, 'png');
+  assert.equal(meta.width, SIGNATURE_WIDTH);
+  // Opaque: its own soot background carries the contrast on GitHub's light and dark backgrounds.
+  assert.equal(meta.hasAlpha, false, 'no transparency');
+  for (const [from, to] of [
+    ['affiliation: a subsidiary of zUrp Industries', 'affiliation: a subsidiary of zUrp Holdings'],
+    ['name: zUrp Embedded', 'name: zUrp Optics'],
+    ['subtitle: Low-tech · DIY · Moon-shot embedded', 'subtitle: Low-tech · DIY · Moon-shot hardware'],
+  ]) {
+    assert.ok(!original.equals(await image(editedSite(from, to))), `${to}: the image changes`);
+  }
+});
+
+// 10 ------------------------------------------------------------------------------------------------
+// The organisation README as it was before the engine (zUrp-Embedded/.github → profile/README.md,
+// main@beab68d), byte for byte. The engine regenerates it at each deployment: everything but the list
+// of the projects must come out as written here (the human's decision).
+const ORG_README_BEFORE = `<div align="center">
+
+<img src="/profile/Low_tech_DIY.png" alt="zUrp Embedded logo — Nyan Cat, Low-Tech & DIY caption" width="320">
+
+# zUrp Embedded
+
+*Low-tech, DIY, moon-shot embedded systems.*
+
+![status](https://img.shields.io/badge/status-work_in_progress-orange)
+![license](https://img.shields.io/badge/license-GPL--3.0-blue)
+![tech](https://img.shields.io/badge/tech-1MB_of_bash-informational)
+
+[**🌐 zurp-embedded.github.io**](https://zurp-embedded.github.io)
+
+</div>
+
+---
+
+## 👋 Hi here
+
+Welcome to DIY hell. We build embedded systems with the discipline of a space agency and the headcount of one developer. Low-tech by conviction, over-engineered by principle.
+
+## 🚀 Projects
+
+### Work in Progress ⚠ private repo ⚠
+
+- **[LCARS-fleet](https://github.com/zurp-embedded/LCARS-fleet)** — *Lightweight Contained Agent Resilient System.* Multi-agent **fleet runtime** for Claude Code. ~1 MB of bash, zero framework, NASA-grade corpus discipline. The agent is **contained** (a wall, not a prompt) and the system is **resilient** (automatic recovery on failure). Low-tech agentic orchestration, moon-shot quality, built solo.
+
+### Released ✅
+
+*Soon ©️*
+
+---
+
+<div align="center">
+
+*zUrp Embedded — a subsidiary of zUrp Industries.*
+
+</div>
+`;
+
+test('10. the organisation README comes out as it was before the engine, but for the list of projects (from the catalog), the qualifier of its WiP title and the generation comment', async () => {
+  const root = tempRoot();
+  const { snapshotFile, products } = await built(root);
+  const out = join(root, 'kit');
+  execFileSync(process.execPath, [join(ROOT, 'scripts', 'readme-kit.mjs'), '--catalog', snapshotFile, '--out', out], { stdio: 'pipe' });
+  const generated = readFileSync(join(out, 'profile', 'README.md'), 'utf8');
+  // The one line of its own: the generation comment, first.
+  const [comment, ...rest] = generated.split('\n');
+  assert.match(comment, /^<!-- zUrp-Embedded\/\.github → profile\/README\.md — generated by scripts\/readme-kit\.mjs .* -->$/);
+  const body = rest.join('\n');
+  // Header, image, badges, « Hi here »: identical up to the projects.
+  const projects = '## 🚀 Projects\n\n';
+  const head = ORG_README_BEFORE.slice(0, ORG_README_BEFORE.indexOf(projects) + projects.length);
+  assert.equal(body.slice(0, head.length), head, 'header, image, three badges and « Hi here » as before');
+  // The WiP title, with the qualifier of the architect's decision.
+  assert.ok(body.startsWith(`${head}### Work in Progress ⚠ NOT YET VALIDATED ⚠\n\n`), 'the WiP title');
+  // The released part and the footer: identical (the simulator holds no released product).
+  assert.ok(!products.some((p) => p.status === 'released'), 'no released product in the simulator');
+  const tail = ORG_README_BEFORE.slice(ORG_README_BEFORE.indexOf('### Released ✅'));
+  assert.ok(body.endsWith(tail), 'Released, « Soon », the signature and the footer as before');
+  // Between the two: only the list of projects, from the catalog — one entry per product.
+  const list = body.slice(head.length, body.length - tail.length);
+  for (const p of products) assert.ok(list.includes(`>${p.name}</a>`), `${p.name} listed`);
+  assert.doesNotMatch(list, /LCARS/, 'LCARS-fleet has no 9_Assets/: it leaves the README');
+});

@@ -1,0 +1,271 @@
+---
+// SOURCE: zurp-astronomics-site — layout of the main site (v2, at `/`: series 2 posters, worn plate look)
+// AUTHOR: engineer
+// DATE: 2026-10-03
+// STATUS: active
+// REVISED: 2026-10-06 (ticket #49) — default description and og:site_name from content/site.yml
+// REVISED: 2026-10-21 (ticket #117) — the title bands stand straight (the torn edge, the screen and the
+//   offset ghost stay); `.z2-tabrow`, the row of a product page's manual tabs and its GitHub link
+//
+// The site's only layout since the v1 archive (/alternate/, V1Layout.astro) was deleted (ticket #35).
+// Head contract: noindex, OG/Twitter, icons (favicon + apple-touch-icon, src/lib/site-icons.ts), build stamp.
+//
+// THE LOOK is the site zUrp Embedded had before the engine (8c2fc77, src/layouts/Layout.astro and
+// src/pages/index.astro): near-black page, orange accent, IBM Plex Sans / Space Grotesk / IBM Plex
+// Mono. The custom properties below are that site's, under the same names; the global rules are its
+// own, plus the few shared classes the engine's pages and components use (`z2-*`: class names kept
+// from the engine's first theme, harmless and stable — the scripts and tests that read the pages
+// know them, e.g. `.z2-tabrow`).
+//
+// Common header (tickets #27, #31, src/components/v2/SiteHeader.astro): the compact bar (logo,
+// subtitle) is drawn HERE, before the page's slot, on every page — sticky on product pages; on the
+// home page (`home`) fixed and faded in by the scroll. The home page's big header (the logo is its
+// h1) is drawn by the page itself, inside its hero.
+import Footer from '../components/v2/Footer.astro';
+import SiteHeader from '../components/v2/SiteHeader.astro';
+import { siteContent } from '../lib/content.mjs';
+
+interface Props {
+  title: string;
+  /** Meta description; default: the site's tagline (content/site.yml). */
+  description?: string;
+  /**
+   * Social card image. Every page passes its own JPEG (home: the Low-Tech & DIY poster, product
+   * page: its poster). The default is only a fallback for a future page that forgets: the
+   * Low-Tech & DIY panel at its stable URL (src/lib/brand-images.ts), always in dist/.
+   */
+  ogImage?: string;
+  /** Product line for the footer; omitted on the home page. */
+  productName?: string;
+  /** Home page: the compact bar is fixed and faded in by the scroll (the page draws its big header). */
+  home?: boolean;
+}
+
+const site = siteContent();
+const {
+  title,
+  description = site.tagline,
+  ogImage = '/brand/low-tech-diy.webp',
+  productName,
+  home = false,
+} = Astro.props;
+
+const canonicalURL = new URL(Astro.url.pathname, Astro.site ?? 'https://zurp-embedded.github.io').toString();
+const ogImageURL = new URL(ogImage, Astro.site ?? 'https://zurp-embedded.github.io').toString();
+const commitHash = import.meta.env.PUBLIC_COMMIT_HASH;
+const buildDate = import.meta.env.PUBLIC_BUILD_DATE;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="description" content={description} />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#0c0d10" />
+    <!-- Icons (src/lib/site-icons.ts): the large one first, the tab sizes last — Firefox has long
+         taken the last declared icon whatever its `sizes`, so the 32 px crop must close the list.
+         /favicon.ico (16 + 32) is not declared: it is there for clients that request it on their own. -->
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <meta name="generator" content={Astro.generator} />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonicalURL} />
+    <meta property="og:image" content={ogImageURL} />
+    <meta property="og:site_name" content={site.name} />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImageURL} />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;600;700&family=Space+Grotesk:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
+    <title>{title}</title>
+  </head>
+  <body id="top">
+    <!-- id="top" on <body>: the target of the footer panel's "back to top" link (Footer.astro). -->
+    <SiteHeader home={home} />
+    <slot />
+    <Footer productName={productName} />
+    <div class="z2-stamp" aria-hidden="true">
+      <code>{commitHash}</code>
+      <span class="sep">·</span>
+      <span>{buildDate}</span>
+    </div>
+  </body>
+</html>
+
+<style is:global>
+  /* The palette, the fonts and the global rules of the site of 8c2fc77 (src/layouts/Layout.astro). */
+  :root {
+    --bg: #0c0d10;
+    --bg-elev: #15171c;
+    --fg: #e8ebf0;
+    --fg-muted: #8a8f9a;
+    --accent: #f97316;
+    --border: #26282f;
+    --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+    --font-display: 'Space Grotesk', 'IBM Plex Sans', sans-serif;
+    --font-mono: 'IBM Plex Mono', 'SF Mono', Menlo, monospace;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    font-family: var(--font-body);
+    background: var(--bg);
+    color: var(--fg);
+    color-scheme: dark;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    min-height: 100vh;
+    line-height: 1.6;
+    font-weight: 400;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+  }
+
+  a {
+    color: var(--accent);
+    text-decoration: none;
+    transition: opacity 0.15s ease;
+  }
+
+  a:hover {
+    opacity: 0.75;
+  }
+
+  a:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  img {
+    max-width: 100%;
+    height: auto;
+  }
+
+  code,
+  pre,
+  kbd,
+  samp {
+    font-family: var(--font-mono);
+  }
+
+  /* The old site's `.container`. */
+  .z2-container {
+    width: 100%;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 1.5rem;
+  }
+
+  /* A section title: the old site's `section h2`. */
+  .z2-band {
+    font-size: 2rem;
+    margin-bottom: 2rem;
+    color: var(--fg);
+  }
+
+  /* A raised panel: the old site's product card (`.card`). */
+  .z2-plate {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+
+  /*
+   * The row of a product page (ticket #117): the manual's tabs (src/components/v2/ManualTabs.astro),
+   * then the product's GitHub link at its right end — last when the row wraps. A page without a
+   * manual draws the same row with the link alone, so that it sits at the same place on every page.
+   */
+  .z2-tabrow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Visually hidden, still read by screen readers and crawlers. */
+  .z2-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* The build stamp: the old site's `.build-stamp`. */
+  .z2-stamp {
+    position: fixed;
+    bottom: 0.5rem;
+    right: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--fg-muted);
+    opacity: 0.35;
+    letter-spacing: 0.03em;
+    pointer-events: none;
+    user-select: none;
+    z-index: 100;
+  }
+
+  .z2-stamp code {
+    color: var(--accent);
+    opacity: 0.8;
+  }
+
+  .z2-stamp .sep {
+    margin: 0 0.35rem;
+    opacity: 0.5;
+  }
+
+  @media (max-width: 640px) {
+    .z2-stamp {
+      display: none;
+    }
+    .z2-band {
+      font-size: 1.6rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      transition: none !important;
+    }
+  }
+</style>

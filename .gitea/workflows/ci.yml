@@ -1,0 +1,405 @@
+name: CI
+
+# Le rail CI de TOUT projet créé par la fleet — posé par le scaffold. Une seule source :
+# `priv/catalogue/project_template/main/`.
+#
+# CE QU'IL FAIT : il prouve que la chaîne existe (un push atteint la forge, la forge dispatche, un
+# runner exécute, un verdict revient) ET il tourne dans une image qui SAIT faire tourner un vrai
+# harnais — node (donc `actions/checkout@v4`), python3, bash, git, les outils courants. Un projet
+# neuf n'a pas encore de suite : le step « Le rail répond » est un placeholder VERT. Le jour où le
+# projet sait ce qu'il est, il REMPLACE le `run:` de ce step par sa commande de test — DANS LE MÊME
+# job, sur la même image, sans rien reconfigurer — et il GARDE son `if:`.
+#
+# ⚠ LE CHEMIN COURT DE LA DOCUMENTATION : LE `if:` DU STEP DE TEST EN EST LA MOITIÉ. Le step
+# « Portée du diff » regarde ce que la branche change depuis sa merge-base avec `main` (pour
+# `pull_request` comme pour `workflow_dispatch`, l'essai `ci_trial` dont le vert DEVIENT la CI de
+# la PR). Le run quotidien de `main` (`schedule`) n'a pas de diff : la portée n'y rend rien. Si TOUS
+# les chemins changés sont de la documentation — les motifs `DOC_PATHS`, ceux de la borne doc du
+# catalogue, hors plancher (`.lcars.json`, `.gitea/`, `CLAUDE.md`, `CLAUDE.local.md`, `.claude`) —,
+# il rend `doc_only=true` : le step de test est SAUTÉ et le job sort VERT, donc le statut `CI / *`
+# exigé par la protection de `main` est rendu sans jouer la suite. Dans le doute (base introuvable,
+# clone superficiel, diff illisible ou vide, motif qu'il ne sait pas lire), il ne rend rien et la
+# suite joue : un faux vert est pire que du temps perdu.
+#
+# ⚠ LE RUN QUOTIDIEN DE `main` NE REJOUE PAS UN COMMIT DÉJÀ VERT : C'EST L'AUTRE MOITIÉ DU `if:`.
+# `main` ne tourne pas à chaque fusion : la CI de PR a joué la tête, et le commit de merge est joué
+# une fois par jour, par `schedule:`, sur la pointe de `main`. Le step « Déjà vert sur ce commit »
+# lit, avec le jeton du job, le dernier run de ce `ci.yml` sur `main`. Il ne rend
+# `already_green=true` que si ce run est terminé, `success`, sur le même commit, et d'un
+# déclencheur qui ne connaît pas le chemin court de la doc (`schedule`, `workflow_dispatch`) : un
+# jour sans fusion ne coûte alors rien. Il nomme dans son log le run où la suite a passé. Rouge,
+# annulé, en cours, absent, autre commit, API muette ou réponse illisible : il ne rend rien et la
+# suite joue. Un vert de `main` veut donc toujours dire qu'une suite a passé sur ce commit — c'est
+# ce que lit la fleet, qui prend le dernier run terminé de `main` pour son verdict.
+#
+# Ce qu'il NE FAUT PAS faire pour « optimiser » : un `paths-ignore:` sur `on:`, ou un `if:` sur le
+# JOB. Le workflow ou le job ne tournerait pas, aucun statut `CI / *` ne serait rendu (un job sauté
+# ne vote pas), et la PR resterait bloquée. Ni réduire `fetch-depth: 0` : sans l'histoire, pas de
+# merge-base, et chaque diff jouerait la suite. Les motifs `DOC_PATHS` sont recopiés de la borne
+# doc du catalogue LCARS, au même sens (`*` ne franchit pas un `/` : `*.md` ne couvre que la
+# racine) : ce que la carte `doc` peut écrire, et rien d'autre.
+#
+# ⚠ POURQUOI `container:` ET PAS `runs-on: <label-gras>`. Le label `shell` est le contrat MINIMAL
+# que tout runner LCARS sert ; ce qu'il y a derrière n'est pas garanti (le déploiement de référence
+# le mappe sur `alpine:3.20` — pas de node, pas de git, pas de bash). `container:` court-circuite
+# ça : le daemon du runner tire l'image nommée, quelle que soit la config du label. Une seule image
+# à tirer, une seule fois — le runner la CACHE (volume nommé `runner-dind`), donc seul le premier job
+# d'un runner neuf paie le téléchargement ; tous les suivants la réutilisent.
+#
+# ⚠ CE QUI A COÛTÉ TROIS JOURS, ET QUE CE FICHIER FERME. `actions/checkout@v4` est une action JS
+# node20 : elle EXIGE node dans l'image. Sur `alpine` nu (l'ancien défaut de ce rail) elle mourait
+# au step 0 — « rouge au checkout sur un code dont la suite passait » (mesuré 2026-08-03 ET 08-23).
+# `catthehacker/ubuntu:act-latest` est l'image de référence de gitea/act : elle porte node et les
+# langages courants. Le checkout marche, et un projet python/bash/go n'a RIEN à configurer.
+#
+# ⚠ SI CETTE CI TE BLOQUE, LE FIX SE CONSOMME IMMÉDIATEMENT. Le runner joue le `ci.yml` du commit
+# TESTÉ — la tête de ta branche pour `pull_request` (le merge-ref porte la version du head), la
+# pointe de `main` pour le run quotidien. Corriger ce fichier DANS ta branche et repousser suffit : la PR se débloque
+# elle-même. Il n'y a rien à merger d'abord, rien à sortir de la PR, et pas de chicken-egg.
+#
+# ⚠ IL TE MANQUE UN LANGAGE ? UNE ACTION DE SETUP, COMME TOUT LE MONDE. C'est le mécanisme
+# standard des forges, et il marche ici : `uses:` se résout, et le job a du réseau. L'image porte
+# le socle (node, python3, bash, git) ; le reste se télécharge AU JOB, et la version que tu veux :
+#
+#     - uses: erlef/setup-beam@v1        # elixir/erlang    - uses: actions/setup-go@v5
+#     - uses: actions/setup-node@v4      # une autre node   - uses: actions/setup-java@v4
+#     - uses: actions/setup-python@v5    # une autre python - uses: dtolnay/rust-toolchain@stable
+#
+# Ce qu'un job télécharge se garde d'un run à l'autre, et ce qu'il construit se publie :
+#
+#     - uses: actions/cache@v4               # clé = ce qui fixe la version téléchargée
+#       with: { path: ~/.cache/ms-playwright, key: pw-${{ hashFiles('package-lock.json') }} }
+#     - uses: actions/upload-artifact@v4     # v4 : listé et téléchargeable par l'API
+#       with: { name: firmware, path: build/*.bin }
+#
+# Un artefact se récupère sur la page du run, ou par l'API :
+# GET /api/v1/repos/<owner>/<repo>/actions/artifacts, puis …/artifacts/<id>/zip.
+#
+# ⚠ ET SURTOUT PAS LE RAIL D'OUTILLAGE (`tool_request`). Ce rail-là sert les PODS, qui tournent
+# sandboxés SANS sortie réseau : un agent ne peut rien télécharger, d'où un geste privilégié
+# approuvé par un humain. La CI, elle, a du réseau — elle télécharge. Demander une convergence
+# privilégiée pour un outil de CI, c'est payer une approbation humaine pour trois lignes de YAML,
+# et poser sur la machine un outil dont le job n'aurait de toute façon rien vu.
+#
+# TU CHANGES QUAND MÊME D'IMAGE ? Mets le nom que tu veux sur `container:` — pour un projet
+# mono-langage (ex. `python:3-slim`) c'est plus rapide qu'un setup. Vérifie qu'elle porte node si
+# tu gardes `checkout` — sinon repli : `git clone` manuel avec le token du job.
+
+# Une branche de PR tourne UNE fois (pull_request). main tourne une fois par jour (schedule, la
+# nuit UTC), sur sa pointe, et pas sur chaque fusion : le step « Déjà vert sur ce commit » saute la
+# suite quand cette pointe a déjà son vert. `workflow_dispatch` : l'essai CI d'un producteur
+# (`ci_trial`) lance ce workflow sur sa branche de livraison avant d'ouvrir la PR.
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # LE NOM DU JOB EST LU PAR LA FLEET. Gitea compose le contexte du statut ainsi :
+  # `<workflow> / <job> (<déclencheur>)` → ici `CI / test (pull_request)`, sous le glob
+  # `CI / *` exigé par la protection de `main`.
+  #
+  # ⚠ CE VERT EST EXIGE DE TOUT LE MONDE, ET CE QU'IL VEUT DIRE DEPEND DE LA CARTE. La protection de
+# `main` exige un statut `CI / *` quelle que soit la carte du projet — c'est le mur qui empeche une
+# main humaine de passer a cote du rail, et il ne se negocie pas. Une carte qui declare n'avoir rien
+# a prouver (`ci: ignore` — PoC jetable, smoke technique, audit sans code) doit donc quand meme
+# PRODUIRE ce statut : ce job le produit, et la ligne `Remplace ce step par ta commande de test (## Test du CLAUDE.md), dans CE job — l'image porte deja ta toolchain. Renommer le job EST le signal que ce projet a pose sa suite.` dit alors que ce vert est un
+# RECU et pas une preuve. Sur une carte qui a quelque chose a prouver, la meme ligne invite a poser
+# la vraie suite ici.
+#
+# `no-harness-yet` est le SIGNAL « ce projet n'a pas encore de vraie suite » : le brief remis au
+  # juge nomme les contextes qui ont tourné, donc « aucun harnais ici » devient une constatation
+  # qu'il rend au lieu d'un fait invisible. Le renommer (ex. `test`) est exactement ce qu'un projet
+  # FAIT quand il pose sa suite — la disparition de ce nom est le signal, et elle est gratuite.
+  # Ce projet a posé sa suite (le site zUrp Embedded, sur le moteur de zurp-astro-site) : le job
+  # s'appelle `test`.
+  test:
+    runs-on: shell
+    container: catthehacker/ubuntu:act-latest
+    steps:
+      # Toute l'histoire : la merge-base avec `main` en a besoin. Un clone superficiel joue la suite.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Portée du diff
+        id: scope
+        shell: bash
+        env:
+          DOC_PATHS: "README* *.md docs/**"
+        run: |
+          # Ce script ne porte aucune expression d'Actions, pas même en commentaire : le moteur les
+          # interpole dans tout le texte du `run:`. Ce qu'il lit arrive par l'environnement.
+          #
+          # Il ne rend `doc_only=true` qu'à la toute fin, quand chaque chemin changé est de la
+          # documentation. Toute autre sortie, y compris une panne de ce script, laisse la sortie
+          # vide, et le step de test, dont le `if:` lit `!= 'true'`, joue la suite.
+          {
+          set +e
+          set -f
+
+          suite() { echo "Portée : la suite joue — $*"; exit 0; }
+
+          if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" != "false" ]; then
+            suite "clone superficiel ou illisible : aucune merge-base fiable"
+          fi
+
+          event="${GITHUB_EVENT_NAME:-}"
+          case "$event" in
+            pull_request | workflow_dispatch)
+              if ! git rev-parse -q --verify "refs/remotes/origin/main^{commit}" >/dev/null; then
+                git fetch -q --no-tags origin "+refs/heads/main:refs/remotes/origin/main" 2>/dev/null
+              fi
+              main=$(git rev-parse -q --verify "refs/remotes/origin/main^{commit}") ||
+                suite "branche main introuvable"
+              base=$(git merge-base "$main" HEAD) || suite "pas de merge-base avec main"
+              ;;
+            *)
+              suite "déclencheur ${event:-absent} : pas de base connue"
+              ;;
+          esac
+
+          # Un motif comme une expression régulière sur le chemin entier, au sens de la borne doc :
+          # `**/` zéro ou plusieurs segments, `**` n'importe quoi, `*` et `?` jamais un `/`. Une
+          # classe `[...]` ou un `{...}` n'est pas lu ici : le motif rend la suite.
+          glob_re() {
+            local g="$1" re="" c
+            while [ -n "$g" ]; do
+              case "$g" in
+                '**/'*) re="${re}(.*/)?" ; g="${g#'**/'}" ;;
+                '**'*) re="${re}.*" ; g="${g#'**'}" ;;
+                '*'*) re="${re}[^/]*" ; g="${g#'*'}" ;;
+                '?'*) re="${re}[^/]" ; g="${g#'?'}" ;;
+                '['* | ']'* | '{'* | '}'*) return 1 ;;
+                *)
+                  c="${g:0:1}" ; g="${g:1}"
+                  case "$c" in
+                    '.' | '^' | '$' | '+' | '(' | ')' | '|' | '\') re="${re}\\${c}" ;;
+                    *) re="${re}${c}" ;;
+                  esac
+                  ;;
+              esac
+            done
+            printf '^%s$' "$re"
+          }
+
+          res=()
+          for g in $DOC_PATHS; do
+            r=$(glob_re "$g") || suite "motif ${g} non lu par ce script"
+            res+=("$r")
+          done
+          [ "${#res[@]}" -gt 0 ] || suite "aucun motif de documentation"
+
+          # Le plancher de la carte doc : jamais de la documentation, quels que soient les motifs.
+          floor() {
+            local p="$1"
+            [ "$p" = ".lcars.json" ] && return 0
+            [ "${p%%/*}" = ".gitea" ] && return 0
+            case "/${p}/" in */.claude/*) return 0 ;; esac
+            case "${p##*/}" in CLAUDE.md | CLAUDE.local.md) return 0 ;; esac
+            return 1
+          }
+
+          doc() {
+            local p="$1" r
+            floor "$p" && return 1
+            printf '%s' "$p" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || return 1
+            for r in "${res[@]}"; do
+              [[ "$p" =~ $r ]] && return 0
+            done
+            return 1
+          }
+
+          # Les deux côtés d'un déplacement : `src/x.c` → `docs/x.md` liste aussi `src/x.c`.
+          list=$(mktemp) || suite "pas de fichier temporaire"
+          if ! git -c core.quotepath=off diff --no-renames --no-textconv --no-ext-diff \
+            --name-only -z "$base" HEAD -- >"$list"; then
+            suite "diff ${base}..HEAD illisible"
+          fi
+          [ -s "$list" ] || suite "diff ${base}..HEAD vide"
+
+          n=0
+          while IFS= read -r -d '' p; do
+            doc "$p" || suite "${p} n'est pas de la documentation"
+            n=$((n + 1))
+          done <"$list"
+          [ "$n" -gt 0 ] || suite "diff ${base}..HEAD sans chemin lu"
+
+          echo "Portée : documentation seule (${n} fichier(s) depuis ${base}) — la suite ne joue pas."
+          echo "doc_only=true" >>"$GITHUB_OUTPUT"
+          exit 0
+          }
+      # Le run quotidien de `main` ne rejoue pas un commit dont le vert est acquis. Le jeton est
+      # celui que la forge donne à tout job : aucun secret du dépôt.
+      - name: Déjà vert sur ce commit
+        id: green
+        shell: bash
+        env:
+          RUNS_API: ${{ github.api_url }}
+          RUNS_TOKEN: ${{ github.token }}
+        run: |
+          # Ce script ne porte aucune expression d'Actions, pas même en commentaire : ce qu'il lit
+          # arrive par l'environnement.
+          #
+          # Il ne rend `already_green=true` qu'à la toute fin, sous `schedule`, quand le dernier
+          # autre run de ce `ci.yml` sur `main` est terminé, `success`, sur ce même commit et d'un
+          # déclencheur qui joue toujours la suite sur `main`. Toute autre sortie, y compris une
+          # panne de ce script, laisse la sortie vide, et le step de test joue la suite.
+          {
+          set +e
+          set -f
+
+          suite() { echo "Déjà vert ? non — la suite joue : $*"; exit 0; }
+
+          event="${GITHUB_EVENT_NAME:-}"
+          if [ "$event" != "schedule" ]; then
+            echo "Déjà vert ? sans objet sous ${event:-un déclencheur absent} : seul le run quotidien de main le demande."
+            exit 0
+          fi
+
+          sha="${GITHUB_SHA:-}"
+          case "$sha" in
+            "" | *[!0-9a-f]*) suite "commit du run illisible" ;;
+          esac
+          [ "${#sha}" -eq 40 ] || [ "${#sha}" -eq 64 ] || suite "commit du run illisible"
+          self="${GITHUB_RUN_ID:-}"
+          case "$self" in
+            "" | *[!0-9]*) suite "identifiant de ce run illisible" ;;
+          esac
+          repo="${GITHUB_REPOSITORY:-}"
+          case "$repo" in
+            */*) ;;
+            *) suite "dépôt de ce run illisible" ;;
+          esac
+          api="${RUNS_API:-${GITHUB_API_URL:-}}"
+          [ -n "$api" ] || suite "adresse de l'API de la forge inconnue"
+          [ -n "${RUNS_TOKEN:-}" ] || suite "pas de jeton du job"
+
+          # Une page de 50, la plus récente : le plafond de la forge, et la série verte qui y tient.
+          page=$(mktemp) || suite "pas de fichier temporaire"
+          code=$(curl -sS --max-time 60 -o "$page" -w '%{http_code}' \
+            -H "Authorization: token ${RUNS_TOKEN}" -H "Accept: application/json" \
+            "${api%/}/repos/${repo}/actions/runs?branch=main&limit=50&page=1")
+          [ "$code" = "200" ] || suite "lecture des runs de main en échec (HTTP ${code:-aucun})"
+
+          # `green <dernier run> <son déclencheur> <run où la suite a passé> <son déclencheur>`,
+          # ou `play <raison>`. Le run où la suite a passé est le premier de la série verte de ce
+          # commit : celui d'avant lui n'était pas un vert acquis, donc il a joué la suite.
+          verdict=$(python3 -I - "$page" "$sha" "$self" <<'PY'
+          import json, os, re, sys
+
+          page, sha, me = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          ACQUIRED = ("schedule", "workflow_dispatch")
+
+
+          def play(why):
+              print("play " + why)
+              sys.exit(0)
+
+
+          def word(v):
+              return re.sub(r"[^A-Za-z0-9_.-]", "?", str(v))[:40]
+
+
+          try:
+              with open(page, encoding="utf-8") as f:
+                  body = json.load(f)
+          except (OSError, ValueError):
+              play("réponse des runs illisible")
+
+          runs = body.get("workflow_runs") if isinstance(body, dict) else None
+          if not isinstance(runs, list):
+              play("réponse sans liste de runs")
+
+
+          def ci(r):
+              p = r.get("path")
+              return isinstance(p, str) and os.path.basename(p.split("@", 1)[0]) == "ci.yml"
+
+
+          mine = []
+          for r in runs:
+              if not isinstance(r, dict) or type(r.get("id")) is not int:
+                  play("un run sans identifiant lisible")
+              if r["id"] != me and r.get("head_branch") == "main" and ci(r):
+                  mine.append(r)
+          mine.sort(key=lambda r: r["id"], reverse=True)
+          if not mine:
+              play("aucun autre run de ci.yml sur main")
+
+
+          def acquired(r):
+              return (
+                  r.get("head_sha") == sha
+                  and r.get("status") == "completed"
+                  and r.get("conclusion") == "success"
+                  and r.get("event") in ACQUIRED
+              )
+
+
+          last = mine[0]
+          if not acquired(last):
+              play(
+                  "dernier run %d de ci.yml sur main : %s, %s, %s, sur %s"
+                  % (
+                      last["id"],
+                      word(last.get("event")),
+                      word(last.get("status")),
+                      word(last.get("conclusion")),
+                      word(last.get("head_sha"))[:12],
+                  )
+              )
+
+          n = 0
+          while n < len(mine) and acquired(mine[n]):
+              n += 1
+          first = mine[n - 1]
+          total = body.get("total_count")
+          if n == len(mine) and not (type(total) is int and total <= len(runs)):
+              play("la série verte de ce commit dépasse la page lue : son premier run n'y est pas")
+
+          print("green %d %s %d %s" % (last["id"], last["event"], first["id"], first["event"]))
+          PY
+          ) || suite "verdict sur les runs illisible"
+
+          case "$verdict" in
+            "play "*) suite "${verdict#play }" ;;
+            "green "*) ;;
+            *) suite "verdict sur les runs illisible" ;;
+          esac
+          set -- $verdict
+          [ "$#" -eq 5 ] || suite "verdict sur les runs illisible"
+
+          echo "Déjà vert : ${sha} a son vert — dernier run ${2} (${3}) de ci.yml sur main, success sur ce commit ; la suite y a passé au run ${4} (${5}). La suite ne rejoue pas."
+          echo "already_green=true" >>"$GITHUB_OUTPUT"
+          exit 0
+          }
+      # Ce que ce vert veut dire, selon la carte. Sans `if:` : la ligne est imprimée sur un diff de
+      # documentation comme sur un diff de code, et elle ne part pas avec le step de test qu'un
+      # projet remplace par sa suite.
+      - name: Ce que ce vert veut dire
+        run: |
+          echo "Posture de la carte (le step de test est « Le rail répond ») :"
+          echo "   Remplace ce step par ta commande de test (## Test du CLAUDE.md), dans CE job — l'image porte deja ta toolchain. Renommer le job EST le signal que ce projet a pose sa suite."
+      - name: Documentation seule
+        if: steps.scope.outputs.doc_only == 'true'
+        run: |
+          echo "Ce diff ne change que de la documentation : la suite n'est pas jouée."
+          echo "⚠ Ce vert dit que le diff est de la doc. Il ne prouve RIEN du code, qui n'a pas changé."
+      # Node 24 LTS, celui de `.github/workflows/deploy.yml` et de `engines` dans package.json, quel
+      # que soit le node de l'image : le vert de la CI doit prédire le build déployé. La sonde
+      # (`probe-test-relevance.yml`) pose le même. Même `if:` que la suite : rien à poser quand elle
+      # ne joue pas.
+      - uses: actions/setup-node@v4
+        if: steps.scope.outputs.doc_only != 'true' && steps.green.outputs.already_green != 'true'
+        with:
+          node-version: 24
+      # Le step de la suite du projet. Garde son `if:` : c'est lui qui la saute sur un diff de
+      # documentation ou sur un commit de `main` déjà vert, et `!= 'true'` la joue quand ni la
+      # portée ni « Déjà vert » n'ont rien rendu. Son `run:` est la commande `## Test` du
+      # `CLAUDE.md` racine, mot pour mot : le build du site sur le catalogue du SIMULATEUR
+      # (`ZURP_CATALOG=simulator`, jamais `github` ici), le contrôle de `dist/`, le kit README, les
+      # tests.
+      - name: Le rail répond
+        if: steps.scope.outputs.doc_only != 'true' && steps.green.outputs.already_green != 'true'
+        run: npm ci && ZURP_CATALOG=simulator npm run build && node scripts/check-dist.mjs && npm run readme-kit && npm test

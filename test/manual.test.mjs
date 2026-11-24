@@ -1,0 +1,656 @@
+// SOURCE: zurp-astronomics-site — the tests of a product's manual (ticket #111): the files read in both backends, the language and its fall-back, the Markdown rendered (front matter, raw HTML, links), the images (served under 600 KB, or left out and reported), the tabs of the page with the Install block in Setup, the report, the simulator's demo manuals, the guard of the pages
+// AUTHOR: engineer
+// DATE: 2026-10-20
+// STATUS: active
+// REVISED: 2026-10-21 (ticket #117) — test 9: the guard of the GitHub link, on the row of the tabs
+// REVISED: 2026-10-21 (ticket #119) — the tabs are the vocabulary of content/site.yml: test 1, the
+//   folder listed in both backends and every .md outside the vocabulary reported, never read; test
+//   5, the titles from the vocabulary; test 7, Basilisk's notes.en.md; tests 10 and 11, the
+//   vocabulary as the one source (a tab added, reordered, as data) and a malformed one failing
+// REVISED: 2026-10-21 (ticket #119, review) — test 7: Basilisk's api.en.md, Overview.md, notes.en.md
+//   (one report line each), its root image and drafts/ (nothing); test 8: the marker check of
+//   dist/; tests 10–11: `replacesAbout`; test 12: the closed schema of the collection; test 13: no
+//   tab named in the code but MANUAL_INSTALL_TAB
+//
+// Run with `npm test` (needs `npm ci`). The convention is the agency's (§ 7 of
+// content/readme-kit/guide.md): a project builds its manual on it, so every rule of it is tested
+// here. A case the simulator does not hold is built in a temporary simulator (makeSim).
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
+import yaml from 'js-yaml';
+
+import { githubBackend, simulatorBackend } from '../src/lib/catalog/source.mjs';
+import { ASSETS_DIR, readRepoProducts } from '../src/lib/catalog/read.mjs';
+import { MANUAL_DIR, MANUAL_IMAGE_MAX_BYTES, MANUAL_LANGS, manualFileOf, manualPath } from '../src/lib/catalog/manual.mjs';
+import { readAndSnapshot, readSnapshot } from '../src/lib/catalog/loader.mjs';
+import { catalogReport } from '../src/lib/catalog/report.mjs';
+import { manualImageUrlPath, manualTabs, manualTexts } from '../src/lib/manual.mjs';
+import { catalogContent, manualContent, manualContentOf, manualTabIds, siteContent } from '../src/lib/content.mjs';
+import { loadBuiltCatalog } from '../scripts/lib/catalog.mjs';
+import { manualDirProblems, manualPageProblems, repoLinkProblems, UNPUBLISHED_MARKER, unpublishedProblems } from '../scripts/lib/check-manual.mjs';
+import { manualSchema } from '../src/lib/catalog/manual-schema.mjs';
+import { z } from 'astro/zod';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SIM = join(ROOT, 'catalog-simulator');
+const sectionIds = catalogContent(ROOT).sections.map((s) => s.id);
+
+const SHEET = `name: Gizmo
+tagline: A gizmo.
+slogan: Gizmo all the things
+category: Gadget
+section: libraries
+status: wip
+description:
+  - First paragraph.
+poster: poster.png
+posterAlt: Gizmo poster.
+accent: '#123456'
+`;
+const PNG = await sharp({ create: { width: 4, height: 4, channels: 3, background: '#123456' } }).png().toBuffer();
+const SMALL = await sharp({ create: { width: 40, height: 30, channels: 3, background: '#05b40e' } }).jpeg().toBuffer();
+/** A valid PNG well over the 600 KB ceiling: noise does not compress. */
+const HEAVY = await (async () => {
+  const w = 1100;
+  const h = 800;
+  const raw = Buffer.alloc(w * h * 3);
+  let seed = 7;
+  for (let i = 0; i < raw.length; i++) raw[i] = (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) >>> 24;
+  return sharp(raw, { raw: { width: w, height: h, channels: 3 } }).png().toBuffer();
+})();
+const md = (body, front = true) => (front ? `---\nDate: 2026-10-20\nStatus: test\n---\n\n${body}` : body);
+const repo = (manual = {}) => ({ '9_Assets/zurp.yml': SHEET, '9_Assets/poster.png': PNG, ...manual });
+const rel = (tag, at) => ({ tag_name: tag, published_at: at, draft: false, prerelease: false });
+
+/** A temporary simulator: repos { name: { path: content } }, releases { name: [{ ...release, files }] }. */
+function makeSim(repos, releases = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'zurp-manual-'));
+  const write = (path, content) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+  };
+  for (const [name, files] of Object.entries(repos)) for (const [p, c] of Object.entries(files)) write(join(dir, 'repos', name, p), c);
+  for (const [name, list] of Object.entries(releases)) {
+    write(join(dir, 'releases', `${name}.json`), JSON.stringify(list.map(({ files, ...r }) => r)));
+    for (const r of list) for (const [f, c] of Object.entries(r.files ?? {})) write(join(dir, 'releases', name, r.tag_name, f), c);
+  }
+  return dir;
+}
+
+/** The simulator backend of `dir`, every readFile recorded in `reads` (`<repo>/<path>`). */
+function spied(dir) {
+  const be = simulatorBackend(dir);
+  const reads = [];
+  return {
+    reads,
+    backend: {
+      ...be,
+      async readFile(r, path) {
+        reads.push(`${r}/${path}`);
+        return be.readFile(r, path);
+      },
+    },
+  };
+}
+const read = (backend) => readRepoProducts(backend, { sectionIds });
+const bySlug = (products) => Object.fromEntries(products.map((p) => [p.slug, p]));
+const tab = (p, id) => p.manual?.tabs.find((t) => t.id === id);
+const TABS = manualTabIds(ROOT);
+/** The message of a .md of 9_Assets/manual/ outside the vocabulary (`file`: its name). */
+const unknown = (r, file) =>
+  `repository ${r}, 9_Assets/manual/${file}: not a file of the manual — its name is not <tab>.<lang>.md with <tab> one of ` +
+  `overview, assembly, setup, usage and <lang> one of en, fr; not published. A tab that does not exist is asked for to the ` +
+  `site's architect (§ 7 of the README kit guide)`;
+
+// 1 -------------------------------------------------------------------------------------------------
+test('1. the manual: 9_Assets/manual/ is listed, in both backends; its <tab>.<lang>.md of the vocabulary are read, every other .md is reported and never read; images and sub-folders are left alone; no folder, nothing', async () => {
+  assert.equal(MANUAL_DIR, `${ASSETS_DIR}/manual`, 'the manual is under 9_Assets/');
+  assert.deepEqual(TABS, ['overview', 'assembly', 'setup', 'usage'], 'the four tabs of ticket #111, in their order');
+  assert.equal(manualPath('setup', 'fr'), '9_Assets/manual/setup.fr.md');
+  assert.deepEqual(manualFileOf('usage.fr.md', TABS), { tab: 'usage', lang: 'fr' });
+  for (const name of ['api.en.md', 'Overview.md', 'setup.md', 'notes.en.md', 'Overview.EN.md', 'usage.de.md', 'usage.en.MD', 'x.usage.en.md']) {
+    assert.equal(manualFileOf(name, TABS), null, name);
+  }
+  const files = {
+    '9_Assets/manual/overview.en.md': md('Hello.'),
+    '9_Assets/manual/usage.fr.md': md('Bonjour.'),
+    '9_Assets/manual/api.en.md': md('Never read.'),
+    '9_Assets/manual/Overview.md': md('Never read.'),
+    '9_Assets/manual/setup.md': md('Never read.'),
+    '9_Assets/manual/notes.en.md': md('Never read.'),
+    '9_Assets/manual/NOTES.MD': md('Never read.'),
+    '9_Assets/manual/picture.png': PNG,
+    '9_Assets/manual/sub/overview.en.md': md('Never read.'),
+    '9_Assets/manual/sub/other.md': md('Never read.'),
+  };
+  const sim = makeSim({ alpha: repo(files), bravo: repo(), charlie: repo({ '9_Assets/manual/images/a.png': PNG }) });
+  const { reads, backend } = spied(sim);
+  const { products, manualProblems } = await read(backend);
+  const manualReads = (r) => reads.filter((p) => p.startsWith(`${r}/${MANUAL_DIR}/`)).map((p) => p.slice(r.length + 1));
+  assert.deepEqual(manualReads('alpha'), ['9_Assets/manual/overview.en.md', '9_Assets/manual/usage.fr.md'], 'the files of the vocabulary, each once, and nothing else of manual/');
+  assert.deepEqual(manualReads('bravo'), [], 'a repository without a manual folder: nothing read');
+  assert.ok(!reads.some((p) => /README|7_Docs/.test(p)), 'never the README or the docs');
+  const by = bySlug(products);
+  assert.deepEqual(by.alpha.manual.tabs.map((t) => [t.id, t.lang]), [['overview', 'en'], ['usage', 'fr']]);
+  assert.ok(!by.alpha.manual.tabs.some((t) => /Never read/.test(t.html)), 'a file reported is not published');
+  assert.equal(by.bravo.manual, null, 'no manual folder: no manual');
+  assert.equal(by.charlie.manual, null, 'a folder without a file of the vocabulary: no manual');
+  assert.deepEqual(manualProblems, [
+    {
+      repo: 'alpha',
+      origin: 'repository alpha',
+      problems: ['NOTES.MD', 'Overview.md', 'api.en.md', 'notes.en.md', 'setup.md'].map((f) => unknown('alpha', f)),
+    },
+  ], 'each .md outside the vocabulary, by name, naming the repository and the file; not the image, not the sub-folder; nothing for bravo and charlie');
+
+  // The simulator's listing: by name, with the type of each entry.
+  const sb = simulatorBackend(sim);
+  assert.deepEqual((await sb.listDir('alpha', MANUAL_DIR)).filter((e) => e.type !== 'file'), [{ name: 'sub', type: 'dir' }]);
+  assert.equal(await sb.listDir('bravo', MANUAL_DIR), null, 'no folder: null');
+  assert.equal(await sb.listDir('alpha', '9_Assets/zurp.yml'), null, 'a file is not a folder');
+  await assert.rejects(sb.listDir('alpha', '../bravo'), /outside the repository/);
+
+  // The GitHub backend (simulated): the folder listed through the contents endpoint, then the files of
+  // the vocabulary and the image shown, by their names; the others never asked for.
+  const calls = [];
+  const gh = { 'Alpha/9_Assets/zurp.yml': SHEET, 'Alpha/9_Assets/poster.png': PNG, ...Object.fromEntries(Object.entries(files).map(([k, v]) => [`Alpha/${k}`, v])), 'Alpha/9_Assets/manual/img.jpg': SMALL };
+  gh['Alpha/9_Assets/manual/overview.en.md'] = md('Hello. ![a picture](img.jpg)');
+  /** A folder of `gh` as the contents endpoint lists it (GitHub's order is not relied on: reversed). */
+  const listing = (dir) => {
+    const names = new Map();
+    for (const k of Object.keys(gh)) {
+      if (!k.startsWith(`${dir}/`)) continue;
+      const [first, ...rest] = k.slice(dir.length + 1).split('/');
+      names.set(first, rest.length ? 'dir' : 'file');
+    }
+    return names.size ? [...names].reverse().map(([name, type]) => ({ name, path: `${dir}/${name}`.replace(/^Alpha\//, ''), type, sha: 'x', size: 1 })) : null;
+  };
+  const fetchImpl = async (url, init) => {
+    calls.push(url);
+    const path = new URL(url).pathname;
+    if (path === '/orgs/zUrp-Embedded/repos') return Response.json([{ name: 'Alpha', html_url: 'https://github.com/zUrp-Embedded/Alpha', license: null }]);
+    if (path === '/repos/zUrp-Embedded/Alpha/releases') return Response.json([]);
+    const m = path.match(/^\/repos\/zUrp-Embedded\/Alpha\/contents\/(.+)$/);
+    const key = m && `Alpha/${decodeURIComponent(m[1])}`;
+    if (key in gh) return new Response(gh[key]);
+    const dir = key && listing(key);
+    if (dir) {
+      assert.equal(init?.headers?.Accept, 'application/vnd.github+json', 'a folder is listed as JSON');
+      return Response.json(dir);
+    }
+    return new Response('{"message":"Not Found"}', { status: 404 });
+  };
+  const viaGitHub = await read(githubBackend({ fetchImpl }));
+  const manualCalls = calls.map((u) => new URL(u).pathname).filter((p) => p.includes('/contents/9_Assets/manual'));
+  assert.deepEqual(
+    manualCalls,
+    ['9_Assets/manual', '9_Assets/manual/overview.en.md', '9_Assets/manual/usage.fr.md', '9_Assets/manual/img.jpg'].map((p) => `/repos/zUrp-Embedded/Alpha/contents/${p}`),
+    'GitHub: the folder, then the files of the vocabulary and the image shown',
+  );
+  assert.deepEqual(viaGitHub.products[0].manual.tabs.map((t) => [t.id, t.lang]), [['overview', 'en'], ['usage', 'fr']]);
+  assert.equal(viaGitHub.products[0].manual.images.length, 1);
+  assert.deepEqual(viaGitHub.manualProblems.flatMap((r) => r.problems), ['NOTES.MD', 'Overview.md', 'api.en.md', 'notes.en.md', 'setup.md'].map((f) => unknown('Alpha', f)), 'the same report as the simulator');
+  // No manual folder on GitHub (a 404): no manual, nothing reported, the build goes on.
+  const noFolder = async (url, init) => (new URL(url).pathname.endsWith('/contents/9_Assets/manual') ? new Response('{"message":"Not Found"}', { status: 404 }) : fetchImpl(url, init));
+  const without = await read(githubBackend({ fetchImpl: noFolder }));
+  assert.equal(without.products[0].manual, null);
+  assert.deepEqual(without.manualProblems, []);
+  // A failed listing or read of a manual file (not a 404) fails the build, like every other read.
+  for (const at of ['/contents/9_Assets/manual?', '/contents/9_Assets/manual/usage.fr.md']) {
+    const failing = async (url, init) => (`${new URL(url).pathname}?`.includes(at) ? new Response('boom', { status: 502 }) : fetchImpl(url, init));
+    await assert.rejects(read(githubBackend({ fetchImpl: failing })), /HTTP 502/, at);
+  }
+});
+
+// 2 -------------------------------------------------------------------------------------------------
+test('2. the .en.md is shown; without it — absent, or unreadable — the .fr.md, marked fr; an unreadable file is reported, never a skip', async () => {
+  const sim = makeSim({
+    alpha: repo({
+      '9_Assets/manual/overview.en.md': md('English overview.'),
+      '9_Assets/manual/overview.fr.md': md('Aperçu en français.'),
+      '9_Assets/manual/setup.fr.md': md('Installation, en français.'),
+      '9_Assets/manual/usage.en.md': Buffer.from([0xff, 0xfe, 0x00, 0x41]),
+      '9_Assets/manual/usage.fr.md': md('Utilisation.'),
+      '9_Assets/manual/assembly.en.md': Buffer.from([0xc3, 0x28]),
+    }),
+  });
+  const { products, skipped, manualProblems } = await read(simulatorBackend(sim));
+  assert.deepEqual(skipped, []);
+  const [p] = products;
+  assert.deepEqual(manualProblems.flatMap((r) => r.problems), [
+    'repository alpha, 9_Assets/manual/assembly.en.md: unreadable — not UTF-8 text; not published',
+    'repository alpha, 9_Assets/manual/usage.en.md: unreadable — not UTF-8 text; not published',
+  ]);
+  assert.deepEqual(p.manual.tabs.map((t) => [t.id, t.lang, t.file]), [
+    ['overview', 'en', '9_Assets/manual/overview.en.md'],
+    ['setup', 'fr', '9_Assets/manual/setup.fr.md'],
+    ['usage', 'fr', '9_Assets/manual/usage.fr.md'],
+  ]);
+  assert.match(tab(p, 'overview').html, /English overview/);
+  assert.doesNotMatch(tab(p, 'overview').html, /français/);
+});
+
+// 3 -------------------------------------------------------------------------------------------------
+test('3. the Markdown: the front matter is never rendered, raw HTML is text, a link to the repository goes to GitHub, one to a manual file to its tab, an absolute link is unchanged; an H1 is rendered and reported', async () => {
+  const overview = md(
+    [
+      '# Big title',
+      '',
+      'Some <b>bold</b> and <script>alert(1)</script>.',
+      '',
+      '<div class="x">block</div>',
+      '',
+      '[schematics](../../1_Board/Gizmo-v1.0_1-Schematics.pdf) · [root file](/LICENSE) · [beside](notes/a%20b.txt#part)',
+      '[usage](usage.en.md) · [usage fr](./usage.fr.md#x) · [assembly](assembly.en.md) · [out](../../../../x)',
+      '[site](https://example.com/a?b=c#d) · [mail](mailto:a@b.c) · [here](#setup) · [proto](//example.org/x)',
+    ].join('\n'),
+  );
+  const sim = makeSim({
+    alpha: repo({
+      '9_Assets/manual/overview.en.md': overview,
+      '9_Assets/manual/usage.en.md': '---\ntitle: no blank line after\n---\n## Usage\n',
+    }),
+  });
+  const { products, manualProblems } = await read(simulatorBackend(sim));
+  const [p] = products;
+  const html = tab(p, 'overview').html;
+  assert.doesNotMatch(html, /Date: 2026|Status: test/, 'no front matter');
+  assert.doesNotMatch(tab(p, 'usage').html, /title: no blank line|<hr/, 'no front matter, even right before the text');
+  assert.match(tab(p, 'usage').html, /^<h2>Usage<\/h2>/);
+  assert.match(html, /<h1>Big title<\/h1>/, 'the H1 is rendered as written');
+  assert.match(html, /Some &lt;b&gt;bold&lt;\/b&gt; and &lt;script&gt;alert\(1\)&lt;\/script&gt;\./, 'raw inline HTML is text');
+  assert.match(html, /&lt;div class=&quot;x&quot;&gt;block&lt;\/div&gt;/, 'a raw HTML block is text');
+  assert.doesNotMatch(html, /<b>|<script|<div/);
+  const repoUrl = 'https://github.com/zUrp-Embedded/alpha';
+  assert.ok(html.includes(`href="${repoUrl}/blob/HEAD/1_Board/Gizmo-v1.0_1-Schematics.pdf"`), 'relative to the .md, on GitHub');
+  assert.ok(html.includes(`href="${repoUrl}/blob/HEAD/LICENSE"`), 'a leading / is the repository root');
+  assert.ok(html.includes(`href="${repoUrl}/blob/HEAD/9_Assets/manual/notes/a%20b.txt#part"`), 'decoded, re-encoded, fragment kept');
+  assert.ok(html.includes('href="#usage">usage<') && html.includes('href="#usage">usage fr<'), 'a manual file → its tab');
+  assert.ok(html.includes(`href="${repoUrl}/blob/HEAD/9_Assets/manual/assembly.en.md"`), 'a manual file whose tab is not on the page → the file on GitHub');
+  assert.ok(html.includes(`href="${repoUrl}">out<`), 'out of the repository → the repository');
+  for (const href of ['https://example.com/a?b=c#d', 'mailto:a@b.c', '#setup', '//example.org/x']) assert.ok(html.includes(`href="${href}"`), `${href} unchanged`);
+
+  const report = catalogReport({ read: 'test', products, skipped: [], ignoredReleases: [], manualProblems });
+  assert.deepEqual(
+    report.warnings,
+    ['manual problem (product published) — repository alpha, 9_Assets/manual/overview.en.md: a level-1 heading (# Big title) — the sections of a manual start at ##; rendered as written'],
+  );
+});
+
+// 4 -------------------------------------------------------------------------------------------------
+test('4. the images: relative to the .md, under 9_Assets/, PNG / JPEG / WebP / AVIF, re-encoded under 600 KB and served; absent, outside 9_Assets/, of another format or undecodable: not shown, reported, the product published', async () => {
+  assert.ok(HEAVY.length > 600 * 1024, `the source image weighs ${HEAVY.length} bytes, over 600 KB`);
+  const body = [
+    '![heavy](images/heavy.png)',
+    '![again](./images/heavy.png)',
+    '![small](../small.jpg)',
+    '![missing](images/missing.png)',
+    '![outside](../../1_Board/view.png)',
+    '![remote](https://example.com/x.png)',
+    '![svg](images/logo.svg)',
+    '![broken](images/broken.webp)',
+  ].join('\n\n');
+  const sim = makeSim({
+    alpha: repo({
+      '9_Assets/manual/assembly.en.md': md(body),
+      '9_Assets/manual/images/heavy.png': HEAVY,
+      '9_Assets/small.jpg': SMALL,
+      '9_Assets/manual/images/logo.svg': '<svg/>',
+      '9_Assets/manual/images/broken.webp': 'not an image',
+      '1_Board/view.png': PNG,
+    }),
+  });
+  const { reads, backend } = spied(sim);
+  const { products, skipped, manualProblems } = await read(backend);
+  assert.deepEqual(skipped, []);
+  const [p] = products;
+  assert.ok(!reads.some((r) => r.includes('1_Board')), 'nothing outside 9_Assets/ is read');
+  assert.equal(p.manual.images.length, 2, 'the heavy image (shown twice, served once) and the small one');
+  for (const image of p.manual.images) {
+    assert.ok(image.size <= MANUAL_IMAGE_MAX_BYTES && image.size < 600 * 1024, `${image.source}: ${image.size} bytes`);
+    assert.match(image.name, /^[0-9a-f]{16}\.webp$/);
+  }
+  const heavy = p.manual.images.find((i) => i.source === '9_Assets/manual/images/heavy.png');
+  assert.ok(heavy.width <= 1600 && heavy.height > 0);
+  const html = tab(p, 'assembly').html;
+  assert.equal((html.match(/<img /g) ?? []).length, 3, 'heavy twice, small once — and none of the others');
+  assert.ok(html.includes(`src="${manualImageUrlPath('alpha', heavy)}" alt="heavy" width="${heavy.width}" height="${heavy.height}" loading="lazy" decoding="async"`));
+  for (const gone of ['missing', 'outside', 'remote', 'svg', 'broken']) assert.ok(!html.includes(`alt="${gone}"`), `${gone} not shown`);
+  assert.doesNotMatch(html, /<p>\s*<\/p>/, 'no empty paragraph where an image was left out');
+  const problems = manualProblems.flatMap((r) => r.problems);
+  const at = 'repository alpha, 9_Assets/manual/assembly.en.md: image';
+  const expected = [
+    `${at} "images/missing.png" (9_Assets/manual/images/missing.png) does not exist in the repository — not shown`,
+    `${at} "../../1_Board/view.png" is not under 9_Assets/ of the repository — not shown`,
+    `${at} "https://example.com/x.png" is not under 9_Assets/ of the repository — not shown`,
+    `${at} "images/logo.svg" (9_Assets/manual/images/logo.svg) is not a PNG, JPEG, WebP or AVIF file — not shown`,
+  ];
+  assert.deepEqual(problems.slice(0, 4), expected, 'one problem per image left out, in the order of the file');
+  assert.match(problems[4], /^repository alpha, 9_Assets\/manual\/assembly\.en\.md: image "images\/broken\.webp" \(9_Assets\/manual\/images\/broken\.webp\) (does not decode|is not a PNG).* — not shown$/);
+  assert.equal(problems.length, 5);
+});
+
+// 5 -------------------------------------------------------------------------------------------------
+test('5. the tabs of a page: the files shown in the order Overview, Assembly, Setup, Usage; a Setup tab whenever there is something to install, holding the Install block; none without a manual', async () => {
+  const install = { tag: 'v1', publishedAt: '2026-10-01T00:00:00Z', esp: null, downloads: [], bench: null };
+  const t = (id, lang = 'en') => ({ id, lang, file: `9_Assets/manual/${id}.${lang}.md`, html: `<p>${id}</p>` });
+  assert.equal(manualTabs({ manual: null, install }), null, 'no manual: no tabs, the Install block in its place');
+  assert.equal(manualTabs({ manual: { tabs: [], images: [] }, install }), null);
+  assert.deepEqual(manualTabs({ manual: { tabs: [t('usage'), t('overview', 'fr')], images: [] }, install: null }).map((x) => [x.id, x.lang, x.install]), [
+    ['overview', 'fr', false],
+    ['usage', 'en', false],
+  ]);
+  assert.deepEqual(manualTabs({ manual: { tabs: [t('usage'), t('overview')], images: [] }, install }).map((x) => [x.id, x.lang, x.html, x.install]), [
+    ['overview', 'en', '<p>overview</p>', false],
+    ['setup', null, null, true],
+    ['usage', 'en', '<p>usage</p>', false],
+  ], 'a manual without setup and an install: a Setup tab with the Install block only');
+  assert.deepEqual(manualTabs({ manual: { tabs: [t('setup', 'fr'), t('assembly')], images: [] }, install }).map((x) => [x.id, x.install]), [
+    ['assembly', false],
+    ['setup', true],
+  ]);
+  const texts = manualTexts(siteContent(ROOT));
+  assert.deepEqual(texts.tabs, { overview: 'Overview', assembly: 'Assembly', setup: 'Setup', usage: 'Usage' }, 'the titles are the site’s (content/site.yml)');
+  assert.deepEqual(Object.keys(texts.tabs), TABS, 'in the order of the vocabulary');
+  assert.throws(() => manualTexts({ product: { manual: { label: 'x', tabs: { overview: 'O' } } } }), /`product\.manual\.tabs` must be a non-empty list/, 'the map of ticket #111 is not a vocabulary');
+  assert.throws(() => manualTexts({ product: { manual: { label: 'x', tabs: [{ id: 'setup', holds: 'h' }] } } }), /`product\.manual\.tabs\[0\]\.title` missing/);
+  // The order is the vocabulary's: given another one, the tabs follow it.
+  assert.deepEqual(manualTabs({ manual: { tabs: [t('usage'), t('overview')], images: [] }, install }, ['usage', 'setup', 'overview']).map((x) => x.id), ['usage', 'setup', 'overview']);
+});
+
+// 6 -------------------------------------------------------------------------------------------------
+test('6. the report, through the real chain (readAndSnapshot, loadBuiltCatalog, catalogReport): per product its tabs and their language, each manual problem a warning of its own naming the repository and the file; the image bytes beside the snapshot, never in it', async () => {
+  const sim = makeSim(
+    {
+      echo: repo({
+        '9_Assets/manual/overview.en.md': md('# Title\n\n![x](gone.png)\n\n![y](img.jpg)'),
+        '9_Assets/manual/usage.fr.md': md('## Utilisation'),
+        '9_Assets/manual/img.jpg': SMALL,
+      }),
+      foxtrot: repo({ '9_Assets/manual/usage.en.md': md('## Usage') }),
+      golf: repo(),
+    },
+    { foxtrot: [{ ...rel('v1', '2026-09-01T00:00:00Z'), files: { 'gizmo_1.0.0_stm32f411.hex': 'hex' } }] },
+  );
+  const root = mkdtempSync(join(tmpdir(), 'zurp-root-'));
+  cpSync(join(ROOT, 'content'), join(root, 'content'), { recursive: true });
+  await readAndSnapshot({ root, env: { ZURP_CATALOG: 'simulator' }, sectionIds, backend: simulatorBackend(sim) });
+  const snapshotFile = join(root, '.zurp-catalog', 'remote.json');
+  const report = catalogReport(await loadBuiltCatalog({ snapshotFile, root }));
+  const line = (slug) => report.lines.find((l) => l.startsWith(`  ${slug} `));
+  assert.match(line('echo'), /  manual overview en, usage fr  nothing to install$/);
+  assert.match(line('foxtrot'), /  manual setup install only, usage en  install v1: download gizmo_1\.0\.0_stm32f411\.hex$/, 'the install labels end the line, as they did');
+  assert.match(line('golf'), /  no manual  nothing to install$/);
+  assert.match(report.lines[0], / 2 with a manual, 2 manual problem\(s\), .* 1 with something to install, 0 ESP manifest\(s\) rejected$/);
+  assert.deepEqual(report.warnings, [
+    'manual problem (product published) — repository echo, 9_Assets/manual/overview.en.md: a level-1 heading (# Title) — the sections of a manual start at ##; rendered as written',
+    'manual problem (product published) — repository echo, 9_Assets/manual/overview.en.md: image "gone.png" (9_Assets/manual/gone.png) does not exist in the repository — not shown',
+  ]);
+  assert.match(report.markdown, /\| Product \| Slug \| Origin \| Source link \| Install \| Manual \|/);
+  assert.match(report.markdown, /\| `foxtrot` \| .* \| install v1: download gizmo_1\.0\.0_stm32f411\.hex \| manual setup install only, usage en \|/);
+  assert.match(report.markdown, /### Manual problems \(the product is published\)\n\n- repository echo, 9_Assets\/manual\/overview\.en\.md: a level-1 heading/);
+
+  const snapshot = JSON.parse(readFileSync(snapshotFile, 'utf8'));
+  assert.equal(snapshot.manualProblems.length, 1);
+  const { manualProblems: _, ...rest } = snapshot;
+  const old = join(root, 'old.json');
+  writeFileSync(old, JSON.stringify(rest));
+  assert.throws(() => readSnapshot(old), /not a catalog snapshot .*manualProblems.* — rebuild/);
+  const echo = snapshot.products.find((p) => p.slug === 'echo');
+  assert.equal(echo.manual.images.length, 1);
+  assert.ok(!('manualFiles' in echo), 'no image bytes in the snapshot');
+  const kept = readdirSync(join(root, '.zurp-catalog', 'manual'));
+  assert.deepEqual(kept, [echo.manual.images[0].sha256], 'the served bytes, named after their SHA-256, beside the snapshot');
+  assert.equal(statSync(join(root, '.zurp-catalog', 'manual', kept[0])).size, echo.manual.images[0].size);
+  rmSync(root, { recursive: true, force: true });
+});
+
+// 7 -------------------------------------------------------------------------------------------------
+test('7. the simulator: Basilisk’s demo manual (an absent tab, a tab in .fr only, an image over 600 KB, a missing image, an H1), Cyclops’s without setup but with an install; Kaiju and Maelstrom without a manual', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'zurp-root-'));
+  cpSync(join(ROOT, 'content'), join(root, 'content'), { recursive: true });
+  cpSync(SIM, join(root, 'catalog-simulator'), { recursive: true });
+  await readAndSnapshot({ root, env: { ZURP_CATALOG: 'simulator' }, sectionIds });
+  const catalog = await loadBuiltCatalog({ snapshotFile: join(root, '.zurp-catalog', 'remote.json'), root });
+  const by = bySlug(catalog.products);
+  assert.deepEqual(manualTabs(by.basilisk).map((t) => [t.id, t.lang, t.install]), [
+    ['overview', 'en', false],
+    ['setup', 'fr', true],
+    ['usage', 'en', false],
+  ], 'no Assembly; Setup in .fr only, with the Install block');
+  const source = statSync(join(SIM, 'repos', 'basilisk', by.basilisk.manual.images[0].source)).size;
+  assert.ok(source > 600 * 1024, `Basilisk’s image source weighs ${source} bytes, over 600 KB`);
+  assert.ok(by.basilisk.manual.images[0].size < 600 * 1024, 'served under 600 KB');
+  const warnings = catalog.manualProblems.flatMap((r) => r.problems);
+  assert.ok(warnings.some((w) => /^repository basilisk, 9_Assets\/manual\/usage\.en\.md: a level-1 heading/.test(w)));
+  assert.ok(warnings.some((w) => /^repository basilisk, 9_Assets\/manual\/usage\.en\.md: image "images\/missing-top-view\.png" .* does not exist/.test(w)));
+  assert.ok(warnings.some((w) => /^repository basilisk, 9_Assets\/manual\/usage\.en\.md: image ".*" is not under 9_Assets\//.test(w)));
+  // Ticket #119, through the real simulator: api.en.md, Overview.md and notes.en.md, outside the
+  // vocabulary — one line of the report each, naming the repository and the file, pointing at § 7;
+  // the image at the root of manual/ and the sub-folder drafts/ — nothing; none of them published.
+  const outside = ['Overview.md', 'api.en.md', 'notes.en.md'];
+  assert.deepEqual(warnings.filter((w) => w.includes(': not a file of the manual')), outside.map((f) => unknown('basilisk', f)), 'one problem per .md outside the vocabulary, and no other');
+  const report = catalogReport(catalog);
+  for (const f of outside) {
+    const lines = report.lines.filter((l) => l.includes(`9_Assets/manual/${f}:`));
+    assert.equal(lines.length, 1, `${f}: one line of the report`);
+    assert.match(lines[0], /^  manual problem \(product published\) — repository basilisk, .* not published\. .*\(§ 7 of the README kit guide\)$/, f);
+  }
+  assert.ok(!report.lines.some((l) => /wiring-diagram|drafts/.test(l)), 'the image and the sub-folder are not reported');
+  for (const f of ['api.en.md', 'Overview.md', 'notes.en.md', 'drafts/assembly.en.md']) {
+    assert.ok(readFileSync(join(SIM, 'repos', 'basilisk', '9_Assets', 'manual', f), 'utf8').includes(UNPUBLISHED_MARKER), `${f} carries the marker check-dist looks for`);
+  }
+  assert.ok(existsSync(join(SIM, 'repos', 'basilisk', '9_Assets', 'manual', 'wiring-diagram.png')));
+  assert.ok(!by.basilisk.manual.tabs.some((t) => t.html.includes(UNPUBLISHED_MARKER)), 'none of them published');
+  assert.ok(!by.basilisk.manual.images.some((i) => /wiring-diagram/.test(i.source)), 'the image no file shows is not served');
+  assert.ok(by.basilisk.install, 'Basilisk installs something');
+  assert.deepEqual(manualTabs(by.cyclops).map((t) => [t.id, t.lang, t.install]), [
+    ['overview', 'en', false],
+    ['setup', null, true],
+    ['usage', 'en', false],
+  ], 'a Setup tab with the Install block only');
+  assert.ok(by.cyclops.install);
+  for (const slug of ['kaiju', 'maelstrom']) assert.equal(by[slug].manual, null, `${slug}: no manual, its page unchanged`);
+  assert.ok(by.maelstrom.install, 'Maelstrom: no manual, something to install');
+  rmSync(root, { recursive: true, force: true });
+});
+
+// 8 -------------------------------------------------------------------------------------------------
+test('8. the guard of the pages (scripts/check-manual.mjs): tabs as the catalog says, the #install block in Setup, the texts in their language; nothing of a manual without one', () => {
+  const texts = manualTexts(siteContent(ROOT));
+  const distDir = mkdtempSync(join(tmpdir(), 'zurp-dist-'));
+  const image = { name: '0123456789abcdef.webp', source: '9_Assets/manual/a.png', size: 3, sha256: '', width: 1, height: 1 };
+  mkdirSync(join(distDir, 'gizmo', 'manual'), { recursive: true });
+  writeFileSync(join(distDir, 'gizmo', 'manual', image.name), 'abc');
+  image.sha256 = createHash('sha256').update('abc').digest('hex');
+  const install = { tag: 'v1', publishedAt: 'x', esp: null, downloads: [], bench: null };
+  const product = {
+    slug: 'gizmo',
+    install,
+    manual: { tabs: [{ id: 'overview', lang: 'en', file: 'o', html: '' }, { id: 'usage', lang: 'fr', file: 'u', html: '' }], images: [image] },
+  };
+  const tabBtn = (id, i) => `<button type="button" class="manual-tab" role="tab" id="tab-${id}" aria-controls="${id}" aria-selected="${i === 0}" tabindex="${i === 0 ? 0 : -1}" data-tab="${id}">${texts.tabs[id]}</button>`;
+  const panel = (id, i, inner) => `<div class="manual-panel" role="tabpanel" id="${id}" aria-labelledby="tab-${id}" tabindex="0"${i ? ' hidden' : ''} data-tab-panel="${id}">${inner}</div>`;
+  const installBlock = '<section class="install" id="install" data-install><h2>Install</h2></section>';
+  const page = (setupInner = installBlock, after = '') =>
+    `<main><section class="lead"></section><div class="manual" data-manual><div role="tablist">${['overview', 'setup', 'usage'].map(tabBtn).join('')}</div>` +
+    panel('overview', 0, `<div class="manual-text" lang="en" data-manual-text><img src="/gizmo/manual/${image.name}"></div>`) +
+    panel('setup', 1, setupInner) +
+    panel('usage', 2, '<div class="manual-text" lang="fr" data-manual-text><p>x</p></div>') +
+    `</div>${after}<section class="repo"></section></main>`;
+  assert.deepEqual(manualPageProblems(page(), product, { texts, distDir }), []);
+  assert.deepEqual(manualDirProblems(distDir, product), []);
+  assert.match(manualPageProblems(page('', installBlock), product, { texts, distDir }).join('\n'), /the #install block is not in the Setup tab/);
+  assert.match(manualPageProblems(page().replace('lang="fr"', 'lang="en"'), product, { texts, distDir }).join('\n'), /the usage text's lang is "en", expected "fr"/);
+  assert.match(manualPageProblems(page().replace('<section class="lead"></section>', '<section class="description"></section>'), product, { texts, distDir }).join('\n'), /« About » section beside the Overview tab/);
+  assert.match(manualPageProblems(page().replace(`/gizmo/manual/${image.name}`, '/gizmo/manual/nope.webp'), product, { texts, distDir }).join('\n'), /is not a file of dist\//);
+  assert.match(manualPageProblems(page().replace('>Usage<', '>Use<'), product, { texts, distDir }).join('\n'), /the usage tab says "Use", expected "Usage"/);
+  // Without a manual: nothing of one, and « About » in its place.
+  const plain = { slug: 'gizmo', install, manual: null };
+  const before = '<main><section class="lead"></section><section class="description"></section>' + installBlock + '<section class="repo"></section></main>';
+  assert.deepEqual(manualPageProblems(before, plain, { texts, distDir }), []);
+  assert.match(manualPageProblems(page(), plain, { texts, distDir }).join('\n'), /manual block \[data-manual\]\(s\), the catalog holds no manual/);
+  assert.match(manualDirProblems(distDir, plain).join('\n'), /exists, the catalog holds no image/);
+  // Ticket #119: the marker of the simulator's files that must not be published, in no file of dist/.
+  const page1 = join(distDir, 'gizmo', 'index.html');
+  writeFileSync(page1, '<p>clean</p>');
+  const listed = [{ rel: 'gizmo/index.html', abs: page1 }, { rel: `gizmo/manual/${image.name}`, abs: join(distDir, 'gizmo', 'manual', image.name) }];
+  assert.deepEqual(unpublishedProblems(listed), []);
+  writeFileSync(page1, `<p>${UNPUBLISHED_MARKER}</p>`);
+  assert.deepEqual(unpublishedProblems(listed), [`dist/gizmo/index.html holds ${UNPUBLISHED_MARKER}: a file of a manual outside the vocabulary, or in a sub-folder of manual/, is published`]);
+  rmSync(distDir, { recursive: true, force: true });
+});
+
+test('9. the guard of the GitHub link (scripts/check-manual.mjs, ticket #117): one link to the repository, « GitHub ↗ » in a new tab, on the row of the tabs beside the tab list — without a manual, alone under the pitch', () => {
+  const texts = siteContent(ROOT).product;
+  const repo = 'https://github.com/zUrp-Embedded/gizmo';
+  const link = (attrs = '') => `<a class="repo-tab" href="${repo}" target="_blank" rel="noopener" data-repo-link${attrs}>${texts.repoLink} <span aria-hidden="true">${texts.newTabArrow}</span></a>`;
+  const tab = '<button type="button" role="tab" id="tab-overview" aria-controls="overview" aria-selected="true" tabindex="0">Overview</button>';
+  const withManual = (row = `<div role="tablist">${tab}</div>${link()}`) =>
+    `<main><section class="lead"></section><div class="manual" data-manual><div class="z2-tabrow">${row}</div><div role="tabpanel" id="overview"></div></div></main>`;
+  const product = { slug: 'gizmo', repo, manual: { tabs: [{ id: 'overview', lang: 'en', file: 'o', html: '' }], images: [] } };
+  assert.deepEqual(repoLinkProblems(withManual(), product, { texts }), []);
+  assert.match(repoLinkProblems(withManual(`<div role="tablist">${tab}${link()}</div>`), product, { texts }).join('\n'), /not on the row of the tabs/);
+  assert.match(repoLinkProblems(withManual().replace('</div></main>', `${link()}</div></main>`), product, { texts }).join('\n'), /2 GitHub link\(s\)/);
+  assert.match(repoLinkProblems(withManual(`<div role="tablist">${tab}</div>${link(' role="tab"')}`), product, { texts }).join('\n'), /role="tab", it is a link/);
+  assert.match(repoLinkProblems(withManual().replace(' target="_blank"', ''), product, { texts }).join('\n'), /does not open a new tab/);
+  assert.match(repoLinkProblems(withManual().replace(texts.newTabArrow, '⟶'), product, { texts }).join('\n'), /says "GitHub ⟶"/);
+  assert.match(repoLinkProblems(withManual().replace(`href="${repo}"`, 'href="https://github.com/x"'), product, { texts }).join('\n'), /the product's repository is/);
+  // Without a manual: the same row, the link alone, under the pitch and before « About » / #install —
+  // and the guard of a page without a manual still finds nothing of one on it.
+  const plain = { slug: 'gizmo', repo, manual: null, install: null };
+  const install = '<section class="install" id="install" data-install></section>';
+  const page = (row = `<div class="z2-tabrow">${link()}</div>`) => `<main><section class="lead"></section>${row}<section class="description"></section>${install}</main>`;
+  assert.deepEqual(repoLinkProblems(page(), plain, { texts }), []);
+  assert.deepEqual(manualPageProblems(page(), plain, { texts: manualTexts(siteContent(ROOT)), distDir: tmpdir() }), []);
+  assert.match(repoLinkProblems(page('') + link(), plain, { texts }).join('\n'), /not under the pitch/);
+  assert.match(repoLinkProblems(page(''), plain, { texts }).join('\n'), /0 GitHub link\(s\)/);
+});
+
+// 10 ------------------------------------------------------------------------------------------------
+/** A root holding content/ with `edit` applied to the parsed content/site.yml (comments dropped: a test copy). */
+function rootWithSite(edit) {
+  const root = mkdtempSync(join(tmpdir(), 'zurp-root-'));
+  cpSync(join(ROOT, 'content'), join(root, 'content'), { recursive: true });
+  const file = join(root, 'content', 'site.yml');
+  const site = yaml.load(readFileSync(file, 'utf8'));
+  edit(site);
+  writeFileSync(file, yaml.dump(site));
+  return root;
+}
+
+test('10. the vocabulary of content/site.yml is the one source of the tabs (ticket #119): the four tabs of ticket #111 unchanged; a tab added or the order changed there is read, ordered and titled with no code change', async () => {
+  const { tabs } = manualContent(ROOT);
+  assert.deepEqual(tabs.map((t) => [t.id, t.title]), [['overview', 'Overview'], ['assembly', 'Assembly'], ['setup', 'Setup'], ['usage', 'Usage']], 'ids as before, the titles of the English site, the order as before');
+  for (const t of tabs) assert.ok(t.holds.length > 0, `${t.id}: what it holds, for the guide`);
+  assert.equal(manualContent(ROOT).aboutTab, 'overview', 'Overview replaces « About », as since ticket #111 — said by the vocabulary');
+  assert.equal(manualTexts(siteContent(ROOT)).aboutTab, 'overview');
+
+  const files = {
+    '9_Assets/manual/overview.en.md': md('## Overview'),
+    '9_Assets/manual/api.en.md': md('## API\n\nSee the [usage](usage.en.md).'),
+    '9_Assets/manual/usage.en.md': md('## Usage'),
+  };
+  const sim = makeSim({ alpha: repo(files) });
+  // The vocabulary of the site: api.en.md is reported, not published.
+  const before = await read(simulatorBackend(sim));
+  assert.deepEqual(before.products[0].manual.tabs.map((t) => t.id), ['overview', 'usage']);
+  assert.deepEqual(before.manualProblems.flatMap((r) => r.problems), [unknown('alpha', 'api.en.md')]);
+
+  // The agency adds `api` (between setup and usage) and moves usage first: an edit of site.yml only.
+  const root = rootWithSite((site) => {
+    const list = site.product.manual.tabs;
+    const usage = list.pop();
+    list.push({ id: 'api', title: 'API', holds: 'l’interface de programmation' });
+    list.unshift(usage);
+  });
+  const ids = manualTabIds(root);
+  assert.deepEqual(ids, ['usage', 'overview', 'assembly', 'setup', 'api']);
+  const { snapshot } = await readAndSnapshot({ root, env: { ZURP_CATALOG: 'simulator' }, sectionIds, backend: simulatorBackend(sim) });
+  const [p] = snapshot.products;
+  assert.deepEqual(p.manual.tabs.map((t) => t.id), ['usage', 'overview', 'api'], 'the new tab published, in the order of the vocabulary');
+  assert.deepEqual(snapshot.manualProblems, [], 'nothing reported any more');
+  assert.ok(tab(p, 'api').html.includes('href="#usage"'), 'a link to a manual file goes to its tab');
+  assert.deepEqual(manualTabs(p, ids).map((t) => t.id), ['usage', 'overview', 'api']);
+  assert.equal(manualTexts(yaml.load(readFileSync(join(root, 'content', 'site.yml'), 'utf8'))).tabs.api, 'API', 'its title, from the vocabulary');
+  rmSync(root, { recursive: true, force: true });
+});
+
+// 11 ------------------------------------------------------------------------------------------------
+test('11. a malformed vocabulary is the site’s fault: it fails the build, naming the key', async () => {
+  const site = (tabs, label = 'x') => ({ product: { manual: { label, tabs } } });
+  const ok = (id) => ({ id, title: id.toUpperCase(), holds: 'h' });
+  assert.deepEqual(manualContentOf(site([ok('setup')])).tabs, [{ id: 'setup', title: 'SETUP', holds: 'h' }], 'one tab, setup, is enough');
+  for (const [tabs, error] of [
+    [[{ id: 'setup', holds: 'h' }, ok('usage')], /`product\.manual\.tabs\[0\]\.title` missing/],
+    [[ok('setup'), { id: 'usage', title: '  ', holds: 'h' }], /`product\.manual\.tabs\[1\]\.title` missing/],
+    [[ok('setup'), { id: 'usage', title: 'U' }], /`product\.manual\.tabs\[1\]\.holds` missing/],
+    [[ok('setup'), ok('setup')], /`product\.manual\.tabs\[1\]\.id` "setup" is listed twice/],
+    [[ok('setup'), ok('Usage')], /`product\.manual\.tabs\[1\]\.id` "Usage" is not an id/],
+    [[ok('setup'), ok('a.b')], /is not an id/],
+    [[ok('setup'), { title: 'T', holds: 'h' }], /`product\.manual\.tabs\[1\]\.id` null is not an id/],
+    [[ok('setup'), ok('install')], /"install" is reserved/],
+    [[ok('overview'), ok('usage')], /has no `setup` tab: the Install block is in it/],
+    [[], /must be a non-empty list/],
+    [{ setup: 'Setup' }, /must be a non-empty list/],
+    [['setup'], /`product\.manual\.tabs\[0\]` is not \{ id, title, holds \}/],
+    [[ok('setup'), { ...ok('usage'), replacesAbout: 'yes' }], /`product\.manual\.tabs\[1\]\.replacesAbout` is not true or false/],
+    [[{ ...ok('setup'), replacesAbout: true }, { ...ok('usage'), replacesAbout: true }], /`replacesAbout` on more than one tab/],
+  ]) {
+    assert.throws(() => manualContentOf(site(tabs)), error, JSON.stringify(tabs));
+  }
+  assert.throws(() => manualContentOf(site([ok('setup')], '')), /`product\.manual\.label` missing/);
+  assert.equal(manualContentOf(site([ok('setup')])).aboutTab, null, 'no tab replaces « About »: it stays');
+  assert.equal(manualContentOf(site([ok('setup'), { ...ok('usage'), replacesAbout: true }])).aboutTab, 'usage');
+  // Through the chain of the build: the read of the catalog fails.
+  const root = rootWithSite((s) => {
+    delete s.product.manual.tabs[1].title;
+  });
+  const sim = makeSim({ alpha: repo() });
+  await assert.rejects(readAndSnapshot({ root, env: { ZURP_CATALOG: 'simulator' }, sectionIds, backend: simulatorBackend(sim) }), /content\/site\.yml: `product\.manual\.tabs\[1\]\.title` missing/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+// 12 ------------------------------------------------------------------------------------------------
+test('12. the schema of the collection (src/content.config.ts → src/lib/catalog/manual-schema.mjs) is closed: a tab id is one of the vocabulary, never any string', () => {
+  const config = readFileSync(join(ROOT, 'src', 'content.config.ts'), 'utf8');
+  assert.match(config, /import \{ manualSchema \} from '\.\/lib\/catalog\/manual-schema\.mjs';/);
+  assert.match(config, /\n {6}manual: manualSchema\(z, tabIds\),\n/, 'the collection’s `manual` is this schema');
+  assert.match(config, /\nconst tabIds = manualTabIds\(\);\n/, 'on the vocabulary of content/site.yml');
+  const manual = (id, lang = 'en') => ({ tabs: [{ id, lang, file: `9_Assets/manual/${id}.${lang}.md`, html: '<p>x</p>' }], images: [] });
+  const schema = manualSchema(z, manualTabIds(ROOT));
+  for (const id of TABS) assert.ok(schema.safeParse(manual(id)).success, `${id}: accepted`);
+  assert.ok(schema.safeParse(null).success, 'no manual');
+  for (const id of ['api', 'notes', 'Overview', '', 'install']) assert.equal(schema.safeParse(manual(id)).success, false, `${JSON.stringify(id)}: refused, not a tab of the vocabulary`);
+  assert.equal(schema.safeParse(manual('usage', 'de')).success, false, 'a language other than en, fr: refused');
+  // A tab added to the vocabulary is accepted with no code change.
+  const wider = manualSchema(z, [...TABS, 'api']);
+  assert.ok(wider.safeParse(manual('api')).success);
+  assert.equal(wider.safeParse(manual('notes')).success, false);
+});
+
+// 13 ------------------------------------------------------------------------------------------------
+test('13. no tab of the vocabulary is named in the code (src/, scripts/) but the Install tab, MANUAL_INSTALL_TAB: the tabs are data', () => {
+  const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
+  const code = [...walk(join(ROOT, 'src')), ...walk(join(ROOT, 'scripts'))].filter((f) => /\.(mjs|js|ts|astro)$/.test(f));
+  assert.ok(code.length > 20, `${code.length} files of code read`);
+  const found = [];
+  for (const file of code) {
+    readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+      for (const id of TABS) {
+        if (!new RegExp(`(['"])${id}\\1`).test(line)) continue;
+        if (file.endsWith(join('src', 'lib', 'content.mjs')) && line === `export const MANUAL_INSTALL_TAB = '${id}';`) continue;
+        found.push(`${file.slice(ROOT.length + 1)}:${i + 1}: ${line.trim()}`);
+      }
+    });
+  }
+  assert.deepEqual(found, [], 'a tab named in the code');
+  assert.ok(TABS.includes('setup'), 'the Install tab is in the vocabulary');
+});

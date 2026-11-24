@@ -1,0 +1,580 @@
+---
+// SOURCE: zurp-astronomics-site — /<slug>/ product page of the main site (v2): series 2 poster on a riveted mount, worn plate sheet
+// AUTHOR: engineer
+// DATE: 2026-10-03
+// STATUS: active
+// REVISED: 2026-10-06 (ticket #49) — the page's own texts (title, status labels, titles, « based on ») come from content/
+// REVISED: 2026-10-06 (ticket #66) — one licence stamp, the licence GitHub detects in the product's
+//   repository, only when there is one; the site's licence rule (two stamps, a sentence) is gone
+// REVISED: 2026-10-06 (ticket #75) — two stamps, each only when its licence exists: « Software · … »
+//   (LICENSE, as GitHub detects it) and « Hardware · … » (LICENSE-HARDWARE, its first line)
+// REVISED: 2026-10-12 (ticket #96) — the « Flash » block, only when the product's repository
+//   publishes a firmware: one ESP Launchpad link per chip, named by its chip, the version flashed,
+//   the whole flash erased (texts: content/site.yml, `product.flash`); `data-flash` on the block for
+//   scripts/check-dist.mjs (review of #96)
+// REVISED: 2026-10-12 (ticket #101) — the « Flash » block is gone with ESP Launchpad: the #install
+//   block, only when the release the product installs from carries a valid installable file — the
+//   ESP Web Tools button (src/components/v2/EspInstallButton.astro) on the manifest the site copies,
+//   the version installed, the .hex / .img.xz links with their notice (texts: content/site.yml,
+//   `product.install`); `id="install"` (a stable anchor) and `data-install` for scripts/check-dist.mjs
+// REVISED: 2026-10-16 (ticket #107) — the web bench, in the #install block when the catalog holds
+//   one: a button opening a near full-screen <dialog> on an <iframe allow="serial">, its `src` set
+//   only when the dialog opens, and an « open in a new tab » link to the same URL (texts:
+//   content/site.yml, `product.install.bench`)
+// REVISED: 2026-10-20 (ticket #111) — the manual: when the product's repository writes one
+//   (9_Assets/manual/), its tabs (src/components/v2/ManualTabs.astro, src/lib/manual.mjs), the
+//   #install block in the Setup tab, « About » replaced by the Overview tab when there is one; the
+//   tabs' behaviour in the page's script. Without a manual, the page is unchanged
+// REVISED: 2026-10-21 (ticket #117) — the stamps stand straight, the buttons and links no longer lift
+//   under the pointer; the « Source » section is gone: the product's GitHub link (`data-repo-link`,
+//   « GitHub ↗ », a new tab) at the right end of the row of the manual's tabs — without a manual, the
+//   same row with the link alone, under the pitch; the bench's « new tab » link takes ↗ too
+// REVISED: 2026-10-21 (ticket #119) — the tab that replaces « About » is the one the vocabulary of
+//   content/site.yml marks `replacesAbout` (Overview), no tab named here
+//
+// Content: tagline, category, badges (status, version of the latest release when there is one,
+// software and hardware licences, each when there is one, based on), the row of the manual's tabs
+// and the GitHub link, About, footer. Copy from the catalog
+// (src/data/catalog.ts: the product's sheet, 9_Assets/zurp.yml of its repository), word for word (it began as the v1 page's, deleted with the v1 archive in
+// ticket #35); the page's own words from content/site.yml and content/catalog.yml.
+//
+// The licences (tickets #66, #75, the human's rules: two files of the repository, two licences) are
+// the catalog's `license` (software: LICENSE, as GitHub detects it) and `hardwareLicense` (hardware:
+// the first line of LICENSE-HARDWARE), stamped by src/lib/license-stamp.mjs with the texts of
+// content/licences.yml: « Software · <label> », « Hardware · <label> », each only when its licence
+// exists. Both keep exactly the `.badge-license` style (the « => GitHub » stamp of the home page
+// copies it): they differ by an attribute, `data-licence`, which scripts/check-dist.mjs reads — no CSS
+// rule of their own. A <span>, not a link: the repository is linked on the row of the tabs, and a link
+// would take the underline of the global link style. scripts/check-dist.mjs checks both stamps
+// against the catalog of the build.
+//
+// THE LOOK is the old site's (src/layouts/Layout.astro and src/components/ProductCard.astro of
+// 8c2fc77): the poster in a raised panel, the category and the badges as the old card's labels, the
+// sheet a raised panel under a thin rule of the product's accent. The product's own colour (its
+// sheet's `accent`) is set on the page as `--product-accent` (+ the text on it, and the fill and text
+// of the status badge, nudged to 4.5:1 by src/lib/color.ts).
+//
+// Ticket #27: no breadcrumb any more. The site's common header (src/components/v2/SiteHeader.astro,
+// drawn by V2Layout, compact and sticky on this page) carries the zUrp plate, a link to `/`, and
+// the poster already says the product's name. The page's only h1 is the product name below
+// (visually hidden); the header's plate is not a heading here.
+import { Image, getImage } from 'astro:assets';
+import V2Layout from '../../layouts/V2Layout.astro';
+import { getCatalog } from '../../data/catalog';
+import { accessibleFill, onAccent } from '../../lib/color';
+import { catalogContent, fill, licenseContent, siteContent } from '../../lib/content.mjs';
+import { licenseStamps } from '../../lib/license-stamp.mjs';
+import { benchUrlPath, espManifestUrlPath } from '../../lib/install.mjs';
+import EspInstallButton from '../../components/v2/EspInstallButton.astro';
+import ManualTabs from '../../components/v2/ManualTabs.astro';
+import { manualTabs, manualTexts } from '../../lib/manual.mjs';
+
+export async function getStaticPaths() {
+  return (await getCatalog()).map((p) => ({
+    params: { slug: p.slug },
+    props: { product: p },
+  }));
+}
+
+const { product } = Astro.props;
+
+const site = siteContent();
+const { statuses } = catalogContent();
+const licenses = licenseStamps(product, licenseContent());
+
+// The #install block (ticket #101): present only when the product's install release carries a valid
+// installable file (src/lib/catalog/install.mjs). ESP: one button for all the chips of the manifest
+// (ESP Web Tools detects the chip). .hex / .img.xz: links where GitHub serves them, grouped by kind,
+// each group followed by its notice. The section's `data-install`, the button's `manifest` and each
+// link's `data-download` are what scripts/check-dist.mjs reads (scripts/lib/check-install.mjs): keep them.
+// The web bench (ticket #107): the bench page the site copies from the same release, opened in a
+// dialog over an <iframe allow="serial"> (Web Serial needs the permission in a frame; the bench is
+// served from the site's own origin, src/lib/install.mjs) or in a tab. The button's `data-bench`
+// (the bench's URL), the link's `data-bench-tab` and the frame's `data-bench-frame` are read by the
+// same check.
+const texts = site.product.install;
+const install = product.install && {
+  version: fill(texts.version, { tag: product.install.tag }),
+  manifest: product.install.esp && espManifestUrlPath(product.slug, product.install.esp),
+  bench: product.install.bench && benchUrlPath(product.slug, product.install.bench),
+  groups: (['hex', 'img'] as const)
+    .map((kind) => ({
+      kind,
+      notice: texts[kind],
+      links: product.install!.downloads.filter((d) => d.kind === kind).map((d) => ({ href: d.url, text: fill(texts.download, { file: d.name }) })),
+    }))
+    .filter((g) => g.links.length),
+};
+
+// The manual (ticket #111): its tabs in order (null without a manual: the page as it was), the
+// #install block given to ManualTabs, which places it in the Setup tab — or, without a manual, right
+// where it was. The tab marked `replacesAbout` in the vocabulary (content/site.yml: Overview)
+// replaces « About ».
+const tabs = manualTabs(product);
+const manualSite = manualTexts(site);
+const manual = tabs && manualSite;
+const about = !tabs?.some((t) => t.id === manualSite.aboutTab);
+
+// Social cards: the series 2 poster as a JPEG. The grainy, worn print weighs more than a flat
+// drawing at the same settings, hence 1000 px / q78 to stay well under the 600 KB per-image ceiling.
+const ogPoster = await getImage({ src: product.poster, width: 1000, format: 'jpg', quality: 78 });
+
+// The status badge carries text on the accent: its fill is the accent nudged (only if needed) to
+// reach 4.5:1 with its text.
+const badge = accessibleFill(product.accent);
+const tint = [
+  `--product-accent: ${product.accent}`,
+  `--product-on-accent: ${onAccent(product.accent)}`,
+  `--badge-fill: ${badge.fill}`,
+  `--on-badge: ${badge.text}`,
+].join('; ');
+---
+
+<V2Layout
+  title={fill(site.product.title, { product: product.name })}
+  description={product.tagline}
+  ogImage={ogPoster.src}
+  productName={product.name}
+>
+  <div class="page" style={tint}>
+    <!-- A <div>, not a <header>: the site header (V2Layout) is the page's one banner. -->
+    <div class="hero">
+      <div class="z2-container">
+        <!-- The poster is the page title: it carries the name. The h1 stays for a11y / SEO. -->
+        <h1 class="z2-sr-only">{product.name}</h1>
+
+        <!-- The poster in a raised panel, never cropped. -->
+        <div class="mount">
+          <Image
+            src={product.poster}
+            alt={product.posterAlt}
+            widths={[400, 640, 960, 1254]}
+            sizes="(max-width: 600px) calc(100vw - 5rem), 480px"
+            format="webp"
+            quality={76}
+            loading="eager"
+            class="poster"
+          />
+        </div>
+
+        <p class="category">{product.category.toUpperCase()}</p>
+
+        <div class="badges">
+          <span class={`badge badge-${product.status}`}>{statuses[product.status].label}</span>
+          {product.release && <span class="badge badge-version">{product.release.tag}</span>}
+          {licenses.software && <span class="badge badge-license" data-licence="software" title={licenses.software.title ?? undefined}>{licenses.software.text}</span>}
+          {licenses.hardware && <span class="badge badge-license" data-licence="hardware" title={licenses.hardware.title ?? undefined}>{licenses.hardware.text}</span>}
+          {product.basedOn && <span class="badge badge-based">{fill(site.product.basedOn, { basedOn: product.basedOn })}</span>}
+        </div>
+      </div>
+    </div>
+
+    <main class="z2-container">
+      <div class="sheet z2-plate">
+        <section class="lead">
+          <p class="pitch">{product.tagline}</p>
+        </section>
+
+        {/* Without a manual, the row of its tabs with the GitHub link alone, where the tabs would be
+             (ticket #117): the link at the same place on every product page. */}
+        {!tabs && (
+          <div class="repo-row">
+            <div class="z2-tabrow">
+              <a class="repo-tab" href={product.repo} target="_blank" rel="noopener" data-repo-link>{site.product.repoLink} <span aria-hidden="true">{site.product.newTabArrow}</span></a>
+            </div>
+          </div>
+        )}
+
+        {about && (
+          <section class="description">
+            <h2 class="z2-band">{site.product.aboutTitle}</h2>
+            {product.description.map((paragraph) => <p>{paragraph}</p>)}
+          </section>
+        )}
+
+        <ManualTabs tabs={tabs} texts={manual} product={product.name}>
+        <a slot="link" class="repo-tab" href={product.repo} target="_blank" rel="noopener" data-repo-link>{site.product.repoLink} <span aria-hidden="true">{site.product.newTabArrow}</span></a>
+        {install && (
+          <section class="install" id="install" data-install>
+            <h2 class="z2-band">{texts.title}</h2>
+            <p class="install-version">{install.version}</p>
+            {install.manifest && (
+              <div class="install-esp">
+                <p>{texts.esp.intro}</p>
+                <EspInstallButton manifest={install.manifest} label={texts.esp.button} />
+              </div>
+            )}
+            {install.groups.map((g) => (
+              <div class="install-download">
+                <ul class="install-links">
+                  {g.links.map((l) => (
+                    <li>
+                      <a class="repo-link" href={l.href} data-download={g.kind}>
+                        <span class="repo-icon" aria-hidden="true">{site.product.downloadArrow}</span>
+                        <span class="repo-url">{l.text}</span>
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+                <p>{g.notice}</p>
+              </div>
+            ))}
+            {install.bench && (
+              <div class="install-bench">
+                <p>{texts.bench.intro}</p>
+                <div class="bench-actions">
+                  <button type="button" class="bench-open" data-bench={install.bench} aria-haspopup="dialog">{texts.bench.button}</button>
+                  <a class="repo-link" href={install.bench} target="_blank" rel="noopener" data-bench-tab>
+                    <span class="repo-icon" aria-hidden="true">{site.product.newTabArrow}</span>
+                    <span class="repo-url">{texts.bench.tab}</span>
+                  </a>
+                </div>
+                <dialog class="bench-dialog" data-bench-dialog aria-label={fill(texts.bench.frame, { product: product.name })}>
+                  <form method="dialog" class="bench-bar">
+                    <button class="bench-close">{texts.bench.close}</button>
+                  </form>
+                  <iframe allow="serial" title={fill(texts.bench.frame, { product: product.name })} data-bench-frame></iframe>
+                </dialog>
+              </div>
+            )}
+          </section>
+        )}
+        </ManualTabs>
+      </div>
+    </main>
+  </div>
+</V2Layout>
+
+<script>
+  // The bench dialog (ticket #107). Nothing loads before the click: the frame has no `src` until the
+  // dialog opens. Closed (its close button, a <form method="dialog">, or Escape, native to a modal
+  // <dialog>), the frame is emptied: the bench page unloads and gives the serial port back, so that
+  // the « new tab » link, or the next opening, can take it (a port is open in one page at a time).
+  for (const open of document.querySelectorAll<HTMLButtonElement>('button[data-bench]')) {
+    const dialog = open.closest('.install-bench')?.querySelector<HTMLDialogElement>('dialog[data-bench-dialog]');
+    const frame = dialog?.querySelector<HTMLIFrameElement>('iframe[data-bench-frame]');
+    if (!dialog || !frame) continue;
+    open.addEventListener('click', () => {
+      frame.src = open.dataset.bench!;
+      dialog.showModal();
+    });
+    dialog.addEventListener('close', () => {
+      frame.src = 'about:blank';
+    });
+  }
+
+  // The manual's tabs (ticket #111, src/components/v2/ManualTabs.astro): the WAI-ARIA tabs pattern
+  // with automatic activation — a click or an arrow key shows its panel; Left / Right move between
+  // the tabs (wrapping), Home / End go to the first / last; only the selected tab is in the Tab order.
+  // An anchor opens the panel that holds it: a tab's own (`#setup`), or anything inside a panel
+  // (`#install`, in Setup), at load and at every change of the anchor (a manual's link to another
+  // tab is one); without one, the first tab. Choosing a tab writes its anchor in the address, without
+  // scrolling, so that it can be shared.
+  for (const manual of document.querySelectorAll<HTMLElement>('[data-manual]')) {
+    const tabs = [...manual.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    const panels = tabs.map((t) => document.getElementById(t.getAttribute('aria-controls') ?? ''));
+    if (!tabs.length || panels.some((p) => !p)) continue;
+    const select = (i: number) =>
+      tabs.forEach((tab, j) => {
+        tab.setAttribute('aria-selected', String(i === j));
+        tab.tabIndex = i === j ? 0 : -1;
+        panels[j]!.hidden = i !== j;
+      });
+    const choose = (i: number) => {
+      select(i);
+      history.replaceState(null, '', `#${panels[i]!.id}`);
+    };
+    const open = (hash: string) => {
+      let id = '';
+      try {
+        id = decodeURIComponent(hash.replace(/^#/, ''));
+      } catch {
+        return false;
+      }
+      const target = id ? document.getElementById(id) : null;
+      const i = target ? panels.findIndex((p) => p!.contains(target)) : -1;
+      if (i < 0) return false;
+      select(i);
+      (target === panels[i] ? manual : target)!.scrollIntoView();
+      return true;
+    };
+    tabs.forEach((tab, i) => tab.addEventListener('click', () => choose(i)));
+    manual.querySelector('[role="tablist"]')?.addEventListener('keydown', (event) => {
+      const e = event as KeyboardEvent;
+      const at = tabs.indexOf(document.activeElement as HTMLButtonElement);
+      const to = ({ ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: tabs.length - 1 } as Record<string, number>)[e.key];
+      if (at < 0 || to === undefined) return;
+      e.preventDefault();
+      const i = (to + tabs.length) % tabs.length;
+      choose(i);
+      tabs[i].focus();
+    });
+    window.addEventListener('hashchange', () => open(location.hash));
+    if (!open(location.hash)) select(0);
+  }
+</script>
+
+<style>
+  .hero {
+    padding: 3rem 0 2.5rem;
+    text-align: center;
+  }
+
+  .mount {
+    width: 100%;
+    max-width: 520px;
+    margin: 0 auto 1.75rem;
+    padding: 1.25rem;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+
+  /* Square, whole poster — never cropped. */
+  .poster {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    border-radius: 4px;
+  }
+
+  /* The old card's category line. */
+  .category {
+    margin-bottom: 1rem;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted);
+  }
+
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: center;
+  }
+
+  /* The old card's status labels. */
+  .badge {
+    padding: 0.15rem 0.5rem;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* Fill and text from accessibleFill() (≥ 4.5:1), in the product's accent. */
+  .badge-wip {
+    background: var(--badge-fill);
+    color: var(--on-badge);
+  }
+
+  .badge-future {
+    background: rgba(138, 147, 163, 0.15);
+    color: var(--fg-muted);
+  }
+
+  .badge-released {
+    background: rgba(90, 200, 120, 0.15);
+    color: #5ac878;
+  }
+
+  /* The version, the licences, « based on »: quiet labels, the tag in its own case. */
+  .badge-version,
+  .badge-license,
+  .badge-based {
+    background: var(--bg-elev);
+    border-color: var(--border);
+    color: var(--fg-muted);
+  }
+
+  .badge-version {
+    text-transform: none;
+  }
+
+  .sheet {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 2rem 0.5rem;
+    border-top: 3px solid var(--product-accent);
+  }
+
+  section {
+    padding: 2rem 0;
+  }
+
+  section + section,
+  :global(.manual) + section {
+    border-top: 1px solid var(--border);
+  }
+
+  /* The row of the GitHub link on a page without a manual: where the manual's would be. */
+  .repo-row {
+    padding-top: 1rem;
+  }
+
+  /* The GitHub link, at the right end of the row of tabs: a link, not a tab. */
+  .repo-tab {
+    margin-left: auto;
+    padding: 0.6rem 0.1rem;
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    white-space: nowrap;
+  }
+
+  /* An anchor (#install) scrolls it under the sticky header of product pages, not behind it. */
+  .install {
+    scroll-margin-top: 6rem;
+  }
+
+  section h2 {
+    font-size: 1.6rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .lead {
+    padding-top: 2rem;
+  }
+
+  .lead .pitch {
+    max-width: 680px;
+    font-size: 1.2rem;
+    font-weight: 600;
+    line-height: 1.45;
+  }
+
+  .description p,
+  .install p {
+    max-width: 680px;
+    margin-bottom: 1rem;
+    font-size: 1rem;
+    line-height: 1.7;
+    color: var(--fg-muted);
+  }
+
+  .install .install-version {
+    font-family: var(--font-mono);
+    color: var(--fg);
+  }
+
+  .install-esp,
+  .install-download,
+  .install-bench {
+    margin-top: 1.25rem;
+  }
+
+  .bench-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 1rem;
+  }
+
+  /* The buttons: the accent, as the old site's links. */
+  .bench-open,
+  .bench-close {
+    cursor: pointer;
+    border: 0;
+    border-radius: 3px;
+    background: var(--accent);
+    color: var(--bg);
+    font-family: var(--font-mono);
+    font-weight: 600;
+  }
+
+  .bench-open {
+    padding: 0.75rem 1.4rem;
+    font-size: 1rem;
+  }
+
+  .bench-close {
+    padding: 0.5rem 1rem;
+    font-size: 0.9rem;
+  }
+
+  /* Near full screen (95vw × 90vh, Basilisk's measure of what its bench needs). */
+  .bench-dialog {
+    width: 95vw;
+    height: 90vh;
+    max-width: none;
+    max-height: none;
+    margin: auto;
+    padding: 0;
+    border: 1px solid var(--border);
+    background: var(--bg-elev);
+  }
+
+  .bench-dialog[open] {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .bench-dialog::backdrop {
+    background: rgba(12, 13, 16, 0.8);
+  }
+
+  .bench-bar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0.4rem;
+  }
+
+  .bench-dialog iframe {
+    flex: 1;
+    width: 100%;
+    border: 0;
+    background: #fff;
+  }
+
+  .install-links {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin: 0 0 1rem;
+    padding: 0;
+  }
+
+  /* A download or « new tab » link: a bordered box, the arrow in the accent. */
+  .repo-link {
+    display: inline-flex;
+    align-items: stretch;
+    max-width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--fg);
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
+  .repo-icon {
+    display: grid;
+    place-items: center;
+    padding: 0 0.75rem;
+    color: var(--accent);
+    font-size: 1.1rem;
+  }
+
+  .repo-url {
+    padding: 0.7rem 1rem 0.7rem 0;
+    font-size: 0.9rem;
+  }
+
+  @media (max-width: 640px) {
+    .hero {
+      padding: 2rem 0;
+    }
+    .mount {
+      padding: 0.75rem;
+    }
+    .sheet {
+      padding: 0 1.25rem 0.25rem;
+    }
+    .lead .pitch {
+      font-size: 1.1rem;
+    }
+  }
+</style>

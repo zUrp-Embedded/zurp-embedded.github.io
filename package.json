@@ -7,9 +7,19 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "readme-kit": "node scripts/readme-kit.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "astro": "^4.16.19"
+    "astro": "^7.3.5",
+    "esp-web-tools": "10.4.0",
+    "js-yaml": "^4.3.2",
+    "markdown-it": "^14.3.2",
+    "mustache": "^4.2.0",
+    "sharp": "^0.35.5"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }
